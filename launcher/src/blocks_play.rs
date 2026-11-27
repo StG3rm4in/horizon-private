@@ -452,7 +452,9 @@ impl Launcher {
             || self.installing.is_some()
             || self.client.is_some()
             || self.starting_client.is_some()
-            || self.native_step.is_some();
+            || self.native_step.is_some()
+            || self.play_when_prepared.is_some()
+            || !self.removing.is_empty();
         let download = button("indexed-assets-download", "Download assets", Kind::Secondary, &t);
         let action = if self.asset_download {
             button("indexed-assets-cancel", "Cancel", Kind::Ghost, &t).on_click(|_, _, _| {

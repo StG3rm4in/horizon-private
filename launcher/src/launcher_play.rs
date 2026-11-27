@@ -270,6 +270,7 @@ impl Launcher {
             || self.starting_client.is_some()
             || self.installing.is_some()
             || self.native_step.is_some()
+            || self.play_when_prepared.is_some()
             || !self.removing.is_empty()
             || !self.version_still_installed(&tag)
         {

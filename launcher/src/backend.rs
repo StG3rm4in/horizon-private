@@ -2047,9 +2047,7 @@ fn refill_own_store(tag: &str) {
     static ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let own = data_dir().join("minecraft");
     let resources = resources_at(&versions_dir().join(tag));
-    if !should_refill_own_store(&own, &resources)
-        || ASKED.swap(true, std::sync::atomic::Ordering::Relaxed)
-    {
+    if !should_refill_own_store(&own, &resources) {
         return;
     }
     let Some(pins) = read_json(&version_dir(tag).join("research-lock.json"))
@@ -2057,6 +2055,13 @@ fn refill_own_store(tag: &str) {
     else {
         return;
     };
+    // An asset-only cache is not an interrupted full game installation. Do not
+    // turn that explicit, limited download into a full download on startup.
+    if !own.join("versions").join(&pins.version).join(format!("{}.jar", pins.version)).is_file()
+        || ASKED.swap(true, std::sync::atomic::Ordering::Relaxed)
+    {
+        return;
+    }
     let fetch = crate::downloads::install_metadata;
     if let Err(e) = download_for_owner(&pins, &own, &fetch, &|line| eprintln!("{line}")) {
         eprintln!("{tag}: the missing assets were not downloaded: {e}");

@@ -578,7 +578,10 @@ impl Launcher {
                         backend::PrepareStep::ALL
                             .iter()
                             .filter(|s| !self.asset_download || **s == backend::PrepareStep::Files)
-                            .map(|s| pill(if self.asset_download { "Minecraft assets" } else { s.name() }, s.cmp(&now))),
+                            .map(|s| {
+                                let name = if self.asset_download { "Minecraft assets" } else { s.name() };
+                                pill(name, s.cmp(&now))
+                            }),
                     )
                     .children(play.then(|| pill("Play", std::cmp::Ordering::Greater))),
             )

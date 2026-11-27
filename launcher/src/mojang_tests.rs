@@ -641,6 +641,15 @@ fn indexed_assets_reuse_local_files_and_never_request_game_jars() {
         .unwrap();
     assert!(server.asked().is_empty());
 
+    // A corrupt local and cached object must be replaced by the verified download.
+    write_file(&local.path().join(&relative), b"bad").unwrap();
+    write_file(&dir.path().join(&relative), b"bad").unwrap();
+    download_indexed_assets_with(None, &pins, dir.path(), &folders, &fetch, &GO, &log)
+        .unwrap();
+    assert_eq!(fs::read(dir.path().join(&relative)).unwrap(), SOUND);
+    assert_eq!(fs::read(local.path().join(&relative)).unwrap(), b"bad");
+    assert_eq!(server.asked(), vec![format!("{OBJECTS}/{}/{hash}", &hash[..2])]);
+
     // Cancellation before starting must not request even the manifest.
     let cancelled = AtomicBool::new(true);
     assert_eq!(
