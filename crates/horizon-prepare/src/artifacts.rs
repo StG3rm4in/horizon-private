@@ -1914,7 +1914,8 @@ mod tests {
         let lock = Lock::read(&root).unwrap();
         let destination = lock.directory.join("manifest.json");
 
-        let error = import_manifest(&lock, &game_files(Some(&minecraft), "9.9")).unwrap_err();
+        let error = import_manifest(&lock, &game_files(Some(&minecraft), "9.9"), None, &|_| {})
+            .unwrap_err();
         assert!(error.contains("may have rewritten it"), "{error}");
         assert!(
             error.contains(&format!("packages/{pinned}/9.9.json")),
@@ -1928,7 +1929,8 @@ mod tests {
 
         fs::create_dir_all(&lock.directory).unwrap();
         fs::copy(root.join("mojang.json"), &destination).unwrap();
-        let manifest = import_manifest(&lock, &game_files(Some(&minecraft), "9.9")).unwrap();
+        let manifest =
+            import_manifest(&lock, &game_files(Some(&minecraft), "9.9"), None, &|_| {}).unwrap();
         assert!(manifest.get("patches").is_none());
         assert_eq!(digest(&destination, "sha1").unwrap(), pinned);
         fs::remove_dir_all(&root).unwrap();
@@ -2184,7 +2186,7 @@ mod tests {
             prism.join("libraries/com/mojang/minecraft/9.9/minecraft-9.9-client.jar")
         );
 
-        import(&fixture.target, &lock, None, &inputs, None, &|_| {}).unwrap();
+        import(&fixture.target, &lock, None, &inputs, None, None, &|_| {}).unwrap();
         let found = verify(&lock).unwrap();
         assert!(found.manifest_from_prism);
         assert!(found.server_from_client);
@@ -2277,6 +2279,7 @@ mod tests {
                 Some(dir),
                 &Inputs::default(),
                 Some(&server),
+                None,
                 &|_| {},
             )
         };
@@ -2354,6 +2357,7 @@ mod tests {
                 Some(&empty),
                 inputs,
                 Some(&server),
+                None,
                 &|_| {},
             )
         };
@@ -2389,6 +2393,7 @@ mod tests {
             &lock,
             Some(&empty),
             &Inputs::default(),
+            None,
             None,
             &|_| {},
         )
