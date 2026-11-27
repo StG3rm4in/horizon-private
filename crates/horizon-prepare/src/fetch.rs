@@ -399,7 +399,7 @@ mod tests {
                         2 => Mode::RejectRange,
                         _ => Mode::Plain,
                     };
-                    respond(&request, &shared, mode, range.as_deref());
+                    respond(request, &shared, mode, range.as_deref());
                 }
             });
             Fixture {
