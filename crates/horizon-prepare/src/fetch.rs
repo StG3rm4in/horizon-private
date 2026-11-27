@@ -448,7 +448,7 @@ mod tests {
         }
     }
 
-    fn respond(request: &tiny_http::Request, data: &[u8], mode: Mode, range: Option<&str>) {
+    fn respond(request: tiny_http::Request, data: &[u8], mode: Mode, range: Option<&str>) {
         let total = data.len();
         let start = range
             .and_then(|r| r.strip_prefix("bytes="))
