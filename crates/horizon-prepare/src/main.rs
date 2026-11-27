@@ -63,8 +63,8 @@ Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
   --launch-api          Print what this preparer supports as JSON (the Launch API's version, the
                         pinned Minecraft and Java, the resources' layout, the options) and exit 0
 
-Needs Minecraft played once from the official launcher, and Java of the version
-research-lock.json pins. Releases use a runtime; development or changed exporters need a JDK.
+Needs Java of the version research-lock.json pins. The pinned files your own copy lacks
+are fetched from Mojang, unless --no-download is passed. Releases use a runtime; development or changed exporters need a JDK.
 compile-exporters builds and validates a release bundle from the already imported pinned jars.
 The resources go to <root>/.local/horizon-client/<version>, or --output; pass that to
 horizon-client --resources. Exit codes: 0 done, 1 failed (or --check found gaps), 2 a refused
@@ -78,7 +78,8 @@ Full preparation also imports all four after extracting the client JAR's placeho
 
 horizon-prepare sounds copies the pinned version's sounds (about 380 MB) from the official
 launcher's asset store into the same folder, checking every file. It is optional: without it the
-game is silent. Nothing is downloaded; it needs the version played once from the official launcher.
+game is silent. The objects come from your own asset store, or from Mojang when one is missing
+(unless --no-download).
 ";
 
 /// The folder with research-lock.json: beside the executable in a release folder, else the
