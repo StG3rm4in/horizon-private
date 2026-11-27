@@ -90,6 +90,7 @@ fn proxy_from_environment() -> Option<ureq::Proxy> {
 }
 
 /// The HTTPS side: one agent for every file a preparation needs.
+#[derive(Clone)]
 pub(crate) struct Fetch {
     cache: PathBuf,
     meta: String,
