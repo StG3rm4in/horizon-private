@@ -330,7 +330,7 @@ impl Fetch {
     }
 }
 
-#[cfg(all(test, feature = "download"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::RefCell;
