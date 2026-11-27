@@ -228,14 +228,30 @@ pub fn add_assets(
     output: Option<&Path>,
     minecraft: Option<&Path>,
     inputs: &Inputs,
+    download: bool,
     log: Log,
 ) -> Result<PathBuf, String> {
     let (_, wanted, label, required) = KINDS
         .iter()
         .find(|(name, ..)| *name == kind)
         .ok_or_else(|| format!("no assets called {kind}"))?;
-    let mut assets = Assets::load(root, output, minecraft, inputs, log)?;
-    let _lock = crate::hold_lock(&assets.target, log)?;
+    // The cache lives in `.local`, which the asset commands do not otherwise lock: hold it
+    // before the resources folder, as `prepare_impl` does, so the order never inverts.
+    let local = root.join(".local");
+    let _local_lock = crate::hold_lock(&local, log)?;
+    let mut assets = Assets::load(
+        root,
+        output,
+        minecraft,
+        inputs,
+        download.then(|| crate::fetch::Fetch::new(root)),
+        log,
+    )?;
+    let _lock = if crate::same_dir(&assets.target, &local)? {
+        None
+    } else {
+        Some(crate::hold_lock(&assets.target, log)?)
+    };
     assets.copy(*wanted, label, required, log)
 }
 
@@ -246,6 +262,7 @@ pub(crate) struct Assets {
     target: PathBuf,
     objects: Vec<(String, Value)>,
     verified: HashSet<PathBuf>,
+    fetch: Option<crate::fetch::Fetch>,
 }
 
 impl Assets {
@@ -356,6 +373,11 @@ fn copy_indexed(
         let relative = artifacts::safe_relative(name)
             .ok_or_else(|| format!("Unsafe asset name {name:?} in the asset index"))?;
         let source = object_path(&assets.store, hash)?;
+            if !source.is_file() {
+                if let Some(fetch) = &assets.fetch {
+                    fetch.object(hash, size, &source, log)?;
+                }
+        }
         let destination = assets.target.join("assets").join(relative);
         let import = crate::files::Import::stage(
             &source,
