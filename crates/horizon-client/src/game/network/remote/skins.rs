@@ -347,11 +347,9 @@ impl Game<'_> {
                 let profile = m.profile.as_ref();
                 let t = profile.and_then(|p| p.properties.iter().find(|p| p.name == "textures"));
                 let textures = if let Some(t) = t {
-                    let signature = if t.signature.is_some() {
-                        horizon_client::skins::Signature::Signed
-                    } else {
-                        horizon_client::skins::Signature::Unsigned
-                    };
+                    let signature = horizon_client::skins::texture_signature(
+                        &t.value, t.signature.as_deref(),
+                    );
                     horizon_client::skins::unpack_known(&t.value, signature)
                 } else {
                     // `ResolvableProfile.resolveProfile`: no `textures` and

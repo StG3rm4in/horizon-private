@@ -1101,7 +1101,7 @@ fn run(
                         .ok_or_else(|| Reason::keyed("horizon.multiplayer.not_signed_in", lang))
                         .and_then(|account| {
                             let hash = server_hash(&hello.server_id, &secret, &hello.public_key);
-                            crate::auth::join_server(account, &hash)
+                            crate::auth::join_server_for_login(account, &hash)
                                 .map_err(|error| Reason::login_failure(error, lang))
                         });
                     if let Err(reason) = authenticated {

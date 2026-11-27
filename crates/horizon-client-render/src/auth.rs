@@ -20,6 +20,7 @@ pub struct AuthSession {
     pub uuid: u128,
     pub xuid: Option<String>,
     access_token: String,
+    ely: bool,
 }
 impl std::fmt::Debug for AuthSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -47,11 +48,17 @@ impl AuthSession {
             uuid,
             xuid: None,
             access_token: access_token.to_owned(),
+            ely: false,
         }
     }
 
     pub fn access_token(&self) -> &str {
-        &self.access_token
+        // Other bearer-token services are Minecraft account APIs.
+        if self.ely { "" } else { &self.access_token }
+    }
+
+    pub fn is_ely(&self) -> bool {
+        self.ely
     }
     /// The session file's JSON: {"name", "uuid", "access_token", "user_type": "msa", "xuid"}.
     pub fn parse(text: &str) -> Result<Self, String> {
@@ -68,7 +75,11 @@ impl AuthSession {
         let access_token = field("access_token")
             .filter(|t| !t.is_empty())
             .ok_or("the session has no access token")?;
-        if field("user_type").is_some_and(|t| t != "msa") {
+        let ely = field("user_type") == Some("ely");
+        if ely && !ely_mode() {
+            return Err("an Ely.by session requires HORIZON_API_DISCOVERY=ely.by".into());
+        }
+        if !ely && field("user_type").is_some_and(|t| t != "msa") {
             return Err("the session is not a Microsoft account session".into());
         }
         Ok(Self {
@@ -76,6 +87,7 @@ impl AuthSession {
             uuid,
             xuid: field("xuid").map(str::to_owned),
             access_token: access_token.to_owned(),
+            ely,
         })
     }
     /// Read the session file the launcher wrote and delete it at once. It
@@ -199,6 +211,21 @@ pub fn discovery_url() -> String {
         .unwrap_or_else(|| DEFAULT_DISCOVERY.to_owned())
 }
 
+pub(crate) fn ely_mode() -> bool {
+    std::env::var("HORIZON_API_DISCOVERY").ok().as_deref() == Some("ely.by")
+}
+
+fn session_agent() -> ureq::Agent {
+    if !ely_mode() {
+        return agent();
+    }
+    ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout(Duration::from_secs(15))
+        .user_agent(&format!("Horizon/{}", horizon_core::release::VERSION))
+        .build()
+}
+
 pub(crate) fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(15))
@@ -216,6 +243,15 @@ pub(crate) fn discovery() -> Result<Arc<serde_json::Value>, JoinError> {
     static CACHE: Mutex<Option<Arc<serde_json::Value>>> = Mutex::new(None);
     if let Some(d) = CACHE.lock().unwrap().clone() {
         return Ok(d);
+    }
+    if ely_mode() {
+        let doc: serde_json::Value = serde_json::from_str(include_str!(
+            "../../horizon-protocol/src/ely-discovery.json"
+        ))
+        .map_err(|_| JoinError::Unavailable)?;
+        let doc = Arc::new(doc);
+        *CACHE.lock().unwrap() = Some(doc.clone());
+        return Ok(doc);
     }
     let doc: serde_json::Value = agent()
         .get(&discovery_url())
@@ -244,6 +280,9 @@ pub fn endpoint(doc: &serde_json::Value, service: &str, name: &str) -> Option<St
 /// to no actions, as vanilla does. Blocks: call it off the main thread.
 pub fn fetch_account_status(session: &AuthSession) -> crate::ban_notice::AccountStatus {
     use crate::ban_notice::{AccountStatus, parse_profile_actions, parse_properties};
+    if session.is_ely() {
+        return AccountStatus::default();
+    }
     let Ok(doc) = discovery() else {
         return AccountStatus::default();
     };
@@ -307,6 +346,16 @@ fn with_one_retry(
 /// account is joining the server whose hash is `server_hash`. Horizon tries
 /// twice when the service doesn't answer; vanilla asks the player to.
 pub fn join_server(session: &AuthSession, server_hash: &str) -> Result<(), JoinError> {
+    // An Ely.by session joins only from a server login (`join_server_for_login`). A server id chosen by another
+    // service, such as the cosmetics sign-in, would let that service log in to a server as this player.
+    if session.is_ely() {
+        return Err(JoinError::InvalidSession);
+    }
+    join_server_for_login(session, server_hash)
+}
+
+/// `join_server` for the login handshake, the only caller allowed to join with an Ely.by session.
+pub fn join_server_for_login(session: &AuthSession, server_hash: &str) -> Result<(), JoinError> {
     with_one_retry(
         || join_server_once(session, server_hash),
         Duration::from_millis(500),
@@ -316,12 +365,23 @@ pub fn join_server(session: &AuthSession, server_hash: &str) -> Result<(), JoinE
 fn join_server_once(session: &AuthSession, server_hash: &str) -> Result<(), JoinError> {
     let doc = discovery()?;
     let url = endpoint(&doc, "session", "join").ok_or(JoinError::Unavailable)?;
-    match agent()
+    if session.is_ely() != ely_mode() {
+        return Err(JoinError::InvalidSession);
+    }
+    match session_agent()
         .post(&url)
         .set("Content-Type", "application/json; charset=utf-8")
         .send_string(&join_request(session, server_hash))
     {
+        Ok(response) if session.is_ely() && !(200..300).contains(&response.status()) => {
+            Err(JoinError::Unavailable)
+        }
         Ok(_) => Ok(()),
+        Err(ureq::Error::Status(status, _)) if session.is_ely() => match status {
+            400 | 401 | 403 => Err(JoinError::InvalidSession),
+            _ => Err(JoinError::from_response(status, "")),
+        },
+        Err(ureq::Error::Transport(_)) if session.is_ely() => Err(JoinError::Unavailable),
         Err(ureq::Error::Status(status, response)) => {
             if status >= 500 {
                 log::warn!("The session service's join answered {status}");
@@ -436,6 +496,9 @@ pub fn parse_certificates(body: &str) -> Option<ChatKeyPair> {
 /// UserApiService.getKeyPair: the certificates endpoint, POSTed with the
 /// access token.
 pub fn fetch_chat_keys(session: &AuthSession) -> Result<ChatKeyPair, JoinError> {
+    if session.is_ely() {
+        return Err(JoinError::InvalidSession);
+    }
     let doc = discovery()?;
     let url = endpoint(&doc, "player", "getCertificates").ok_or(JoinError::Unavailable)?;
     let body = match agent()
@@ -484,6 +547,9 @@ pub fn prepare_chat_keys(now: bool) {
 
 /// Prepare keys for this player, independently of the other local accounts.
 pub fn prepare_chat_keys_for(session: Arc<AuthSession>, now: bool) {
+    if session.is_ely() {
+        return;
+    }
     let uuid = session.uuid;
     let mut accounts = CHAT_KEYS.lock().unwrap();
     let keys = accounts.entry(uuid).or_default();
@@ -540,6 +606,9 @@ const MINECRAFT_PROFILE: &str = "https://api.minecraftservices.com/minecraft/pro
 /// Single-player and integrated servers often send no `textures` property, or
 /// one without the equipped cape; the client asks the profile endpoint once.
 pub fn own_textures(session: &AuthSession) -> Option<crate::skins::Textures> {
+    if session.is_ely() {
+        return crate::skins::ely_own_textures(session.uuid);
+    }
     let response = agent()
         .get(MINECRAFT_PROFILE)
         .set("Authorization", &format!("Bearer {}", session.access_token))
@@ -596,7 +665,14 @@ pub fn has_joined(
         query.push_str(&format!("&ip={}", url_encode(&ip.to_string())));
     }
     let separator = if url.contains('?') { '&' } else { '?' };
-    let body = match agent().get(&format!("{url}{separator}{query}")).call() {
+    let body = match session_agent()
+        .get(&format!("{url}{separator}{query}"))
+        .call()
+    {
+        Ok(response) if ely_mode() && response.status() == 204 => return Ok(None),
+        Ok(response) if ely_mode() && response.status() != 200 => {
+            return Err(JoinError::Unavailable);
+        }
         Ok(response) => response.into_string().unwrap_or_default(),
         Err(ureq::Error::Status(status, response)) => {
             let error =

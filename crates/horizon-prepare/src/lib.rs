@@ -638,7 +638,7 @@ fn prepare_impl(
     let jdk = java::find_runtime(lock.java_major, &homes)?;
     // The import and the exporters' scratch files.
     let _local_lock = hold_lock(&root.join(".local"), log)?;
-    let reused = if options.import {
+    let reused = if options.import && options.inputs.official_local.is_none() {
         artifacts::reuse_verified(root, log)?
     } else {
         None

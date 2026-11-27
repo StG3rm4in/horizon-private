@@ -81,6 +81,129 @@ pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
 // Limit owned string allocations as well as table entries: obsolete, rejected profile
 // payloads must not accumulate a server's worth of maximum-size properties.
 const SKIN_MEMO_BYTES: usize = 4 * 1024 * 1024;
+
+fn ely_texture_key() -> Option<&'static horizon_protocol::rsa::RsaPublicKey> {
+    use horizon_protocol::rsa::RsaPublicKey;
+    use std::io::Read;
+
+    static KEY: std::sync::OnceLock<Option<RsaPublicKey>> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        let response = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(5))
+            .redirects(0)
+            .build()
+            .get("https://skinsystem.ely.by/signature-verification-key.der")
+            .call()
+            .ok()?;
+        if response.status() != 200 {
+            return None;
+        }
+        let mut der = Vec::new();
+        response
+            .into_reader()
+            .take(8193)
+            .read_to_end(&mut der)
+            .ok()?;
+        if der.len() > 8192 {
+            return None;
+        }
+        RsaPublicKey::from_der(&der).ok()
+    })
+    .as_ref()
+}
+
+fn ely_signature(
+    value: &str,
+    signature: &str,
+    key: Option<&horizon_protocol::rsa::RsaPublicKey>,
+) -> Signature {
+    use horizon_protocol::rsa::SignatureHash;
+    if signature == "Cg==" {
+        return Signature::Unsigned;
+    }
+    if signature.len() <= 2048
+        && value.len() <= 32767
+        && let Some(key) = key
+        && let Some(decoded) = base64_decode(signature)
+        && key.verify(SignatureHash::Sha1, value.as_bytes(), &decoded)
+    {
+        return Signature::Signed;
+    }
+    Signature::Invalid
+}
+
+/// Verify the signature against the original base64 property value in Ely.by mode.
+pub fn texture_signature(value: &str, signature: Option<&str>) -> Signature {
+    let Some(signature) = signature else {
+        return Signature::Unsigned;
+    };
+    if !crate::auth::ely_mode() {
+        return Signature::Signed;
+    }
+    if signature == "Cg==" {
+        return Signature::Unsigned;
+    }
+    if signature.len() > 2048 || value.len() > 32767 {
+        return Signature::Invalid;
+    }
+    thread_local! {
+        static VERIFIED: std::cell::RefCell<SkinMemo<(String, String), Signature>> =
+            std::cell::RefCell::default();
+    }
+    let slot = (value.to_owned(), signature.to_owned());
+    if let Some(result) = VERIFIED.with_borrow(|memo| memo.get(&slot).copied()) {
+        return result;
+    }
+    let result = ely_signature(value, signature, ely_texture_key());
+    let bytes = slot.0.capacity() + slot.1.capacity();
+    VERIFIED.with_borrow_mut(|memo| memo.remember(slot, result, bytes));
+    result
+}
+
+pub(crate) fn ely_own_textures(id: u128) -> Option<Textures> {
+    let doc = crate::auth::discovery().ok()?;
+    let profile = resolve_profile(&NameOrId::Id(id), &doc)?;
+    let (value, signature) = profile.textures()?;
+    Some(unpack_known(&value, signature))
+}
+
+#[test]
+fn ely_texture_signatures_use_the_encoded_value_and_skip_the_placeholder() {
+    use horizon_protocol::rsa::{RsaPrivateKey, SignatureHash};
+    let key = RsaPrivateKey::generate(1024).unwrap();
+    // Base64 of the fixed bytes {"textures":{}}.
+    let value = "eyJ0ZXh0dXJlcyI6e319";
+    let raw = key.sign(SignatureHash::Sha1, value.as_bytes()).unwrap();
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::new();
+    for chunk in raw.chunks(3) {
+        let a = chunk[0];
+        let b = chunk.get(1).copied().unwrap_or(0);
+        let c = chunk.get(2).copied().unwrap_or(0);
+        encoded.push(alphabet[(a >> 2) as usize] as char);
+        encoded.push(alphabet[(((a & 3) << 4) | (b >> 4)) as usize] as char);
+        encoded.push(if chunk.len() > 1 {
+            alphabet[(((b & 15) << 2) | (c >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        encoded.push(if chunk.len() > 2 {
+            alphabet[(c & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    assert_eq!(
+        ely_signature(value, &encoded, Some(&key.public)),
+        Signature::Signed
+    );
+    assert_eq!(
+        ely_signature("changed", &encoded, Some(&key.public)),
+        Signature::Invalid
+    );
+    assert_eq!(ely_signature(value, &encoded, None), Signature::Invalid);
+    assert_eq!(ely_signature(value, "Cg==", None), Signature::Unsigned);
+}
 struct SkinMemo<K, V> {
     values: std::collections::HashMap<K, (V, usize)>,
     bytes: usize,
@@ -146,6 +269,9 @@ pub fn unpack_known(value: &str, signature: Signature) -> Textures {
 /// base64 JSON payload.
 pub fn unpack(value: &str, signature: Signature, valid_uris: &[impl AsRef<str>]) -> Textures {
     let empty = Textures::default();
+    if crate::auth::ely_mode() && signature == Signature::Invalid {
+        return empty;
+    }
     let Some(json) = base64_decode(value)
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
@@ -251,13 +377,18 @@ pub fn profile_skin_url_nbt(profile: &horizon_core::nbt::Tag) -> Option<String> 
         horizon_core::nbt::Tag::List(list) => list,
         _ => return None,
     };
-    let value = properties.iter().find_map(|p| {
+    let (value, sign) = properties.iter().find_map(|p| {
         let name = nbt_text(p.get("name"))?;
         (name == "textures")
-            .then(|| nbt_text(p.get("value")))
+            .then(|| Some((nbt_text(p.get("value"))?, p.get("signature"))))
             .flatten()
     })?;
-    unpack(&value, Signature::Unsigned, texture_uris()).skin
+    let signature = if crate::auth::ely_mode() {
+        texture_signature(&value, nbt_text(sign).as_deref())
+    } else {
+        Signature::Unsigned
+    };
+    unpack(&value, signature, texture_uris()).skin
 }
 
 /// `ResolvableProfile.skinPatch().body()` of a skull's `profile` NBT: the
@@ -307,16 +438,7 @@ impl ResolvedProfile {
         self.properties
             .iter()
             .find(|(n, _, _)| n == "textures")
-            .map(|(_, v, s)| {
-                (
-                    v.clone(),
-                    if s.is_some() {
-                        Signature::Signed
-                    } else {
-                        Signature::Unsigned
-                    },
-                )
-            })
+            .map(|(_, v, s)| (v.clone(), texture_signature(v, s.as_deref())))
     }
 }
 
@@ -609,7 +731,12 @@ pub fn parse_profile(v: &serde_json::Value) -> ProfileInfo {
         .and_then(|p| {
             Some((
                 p.get("value")?.as_str()?.to_owned(),
-                if p.get("signature").is_some() {
+                if crate::auth::ely_mode() {
+                    texture_signature(
+                        p.get("value")?.as_str()?,
+                        p.get("signature").and_then(|s| s.as_str()),
+                    )
+                } else if p.get("signature").is_some() {
                     Signature::Signed
                 } else {
                     Signature::Unsigned
@@ -737,6 +864,11 @@ pub fn head_skin(
                     .properties
                     .iter()
                     .find(|(n, _, _)| n == "textures")?;
+                if crate::auth::ely_mode() {
+                    return Some(std::sync::Arc::new(prepare_head(&serde_json::json!({
+                        "properties": [{"name": "textures", "value": value, "signature": signature}]
+                    }))));
+                }
                 let cache = &mut resolver.heads.resolved[usize::from(signature.is_some())];
                 if let Some(parsed) = cache.get(value) {
                     return Some(parsed.clone());
@@ -1508,13 +1640,18 @@ impl SkinSlots {
 /// uses https): the body of a 2xx answer, 16 MiB at most, after redirects.
 fn http_get(url: &str) -> Option<Vec<u8>> {
     use std::io::Read;
-    let response = ureq::AgentBuilder::new()
+    let builder = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(15))
-        .user_agent("Java")
-        .build()
-        .get(url)
-        .call()
-        .ok()?;
+        .user_agent("Java");
+    let builder = if crate::auth::ely_mode() {
+        builder.redirects(0)
+    } else {
+        builder
+    };
+    let response = builder.build().get(url).call().ok()?;
+    if crate::auth::ely_mode() && !(200..300).contains(&response.status()) {
+        return None;
+    }
     let mut body = Vec::new();
     response
         .into_reader()

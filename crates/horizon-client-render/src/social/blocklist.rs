@@ -80,7 +80,7 @@ pub(super) fn refresh() {
 /// service said nothing), and any failure is an unknown set.
 fn fetch_block_list() -> Option<HashSet<u128>> {
     lock().next_acceptable = Some(Instant::now() + REQUEST_COOLDOWN);
-    let session = auth::current()?;
+    let session = auth::current().filter(|s| !s.is_ely())?;
     let doc = auth::discovery().ok()?;
     let url = auth::endpoint(&doc, "player", "getBlocklist")?;
     let answer = auth::agent()

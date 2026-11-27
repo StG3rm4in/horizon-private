@@ -32,6 +32,7 @@ Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
                         (default: HORIZON_SERVER_JAR, or the copy imported before)
   --minecraft-dir PATH  The official launcher's game directory with your installed copy
                         (default: HORIZON_MINECRAFT_DIR, or the launcher's own)
+  --official-local PATH  Use this official installation's client jar for both sides
   --prism-dir PATH      A Prism Launcher or MultiMC root, or one of its instances, to read as is:
                         its rewritten version JSON, Maven libraries, assets and components. No
                         server jar is downloaded: its client jar stands in for the server side
@@ -140,6 +141,11 @@ fn main() -> ExitCode {
                 Ok(())
             }
             "--server-jar" => value("--server-jar").map(|v| options.server_jar = Some(v)),
+            "--official-local" if assets.is_none() => value("--official-local").map(|v| {
+                options.minecraft_dir = Some(v.clone());
+                options.inputs.official_local = Some(v);
+                options.import = true;
+            }),
             "--minecraft-dir" => value("--minecraft-dir").map(|v| options.minecraft_dir = Some(v)),
             "--prism-dir" => value("--prism-dir").map(|v| options.inputs.prism_dir = Some(v)),
             "--version-json" => {

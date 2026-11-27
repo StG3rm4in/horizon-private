@@ -206,14 +206,16 @@ pub fn abuse_report_limits() -> AbuseReportLimits {
 /// the online service's answer is always yes; without a signed-in account
 /// vanilla is on the offline service, whose answer is no.
 pub fn can_send_reports() -> bool {
-    auth::current().is_some()
+    auth::current().is_some_and(|s| !s.is_ely())
 }
 
 /// `UserApiService.reportAbuse`: the request goes to the player service's
 /// `sendReport` endpoint. The error is the service's answer, as the
 /// `MinecraftClientHttpException` the sender catches.
 pub fn send_report(request: &AbuseReportRequest) -> Result<(), String> {
-    let session = auth::current().ok_or("no signed-in account")?;
+    let session = auth::current()
+        .filter(|s| !s.is_ely())
+        .ok_or("no signed-in account")?;
     let doc = auth::discovery().map_err(|_| "the services discovery did not answer".to_owned())?;
     let url = auth::endpoint(&doc, "player", "sendReport")
         .ok_or("the discovery document has no sendReport endpoint".to_owned())?;

@@ -198,6 +198,9 @@ pub fn start(
         log: Mutex::new(Box::new(log)),
         admission: Admission::new(config.server.max_players as usize),
     });
+    if inner.keys.is_some() && auth::ely_mode() {
+        inner.note("INFO", "Proxy session verification uses Ely.by");
+    }
     let accepting = inner.clone();
     thread::Builder::new()
         .name("Proxy listener".into())

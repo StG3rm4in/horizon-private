@@ -171,11 +171,16 @@ pub struct Inputs {
     pub libraries_dir: Option<PathBuf>,
     pub assets_dir: Option<PathBuf>,
     pub prism_dir: Option<PathBuf>,
+    pub official_local: Option<PathBuf>,
 }
 
 impl GameFiles {
     /// These files with what `inputs` names instead.
     pub fn with(mut self, inputs: &Inputs, version: &str) -> Self {
+        if let Some(folder) = &inputs.official_local {
+            let [official, _] = layouts(folder, version);
+            return official;
+        }
         if let Some(prism) = inputs
             .prism_dir
             .as_ref()
@@ -1125,6 +1130,17 @@ pub fn import(
     log: Log,
 ) -> Result<(), String> {
     let files = game_files(minecraft, &lock.version).with(inputs, &lock.version);
+    if inputs.official_local.is_some()
+        && (!files.manifest.is_file()
+            || !files.client.is_file()
+            || !files.libraries.is_dir()
+            || !files.assets.is_dir())
+    {
+        return Err(format!(
+            "Run the pinned Minecraft version in the official launcher first: {}",
+            files.folder.display(),
+        ));
+    }
     let manifest = import_manifest(lock, &files)?;
     let client = import_copy(
         &files.client,
@@ -1173,17 +1189,25 @@ pub fn import(
     // Prism Launcher never downloads the server jar. Its client jar contains every server class
     // (and Prism's libraries are a superset of the server bundle's), so the client jar is the
     // server side of exporters and the data generator instead.
-    let (server, server_libraries, server_from_client) =
-        match import_server(lock, server_jar, files.prism.is_some())? {
-            Some(server) => {
-                let (game, libraries) = unpack_server(server, &lock.directory, id)?;
-                (game, libraries, false)
-            }
-            None => {
+    let server = if inputs.official_local.is_some() {
+        None
+    } else {
+        import_server(lock, server_jar, files.prism.is_some())?
+    };
+    let (server, server_libraries, server_from_client) = match server {
+        Some(server) => {
+            let (game, libraries) = unpack_server(server, &lock.directory, id)?;
+            (game, libraries, false)
+        }
+        None => {
+            if inputs.official_local.is_some() {
+                log("Official local preparation: using the client jar for the server side");
+            } else {
                 log("Prism has no server jar: using its client jar for the server side");
-                (client.clone(), client_libraries.clone(), true)
             }
-        };
+            (client.clone(), client_libraries.clone(), true)
+        }
+    };
     write_import_metadata(
         root,
         lock,

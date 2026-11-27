@@ -119,7 +119,30 @@ fn discovery_url() -> String {
 }
 
 /// The session service's verify endpoint, from the discovery document at `discovery` (kept for a while).
+pub(super) fn ely_mode() -> bool {
+    discovery_url() == "ely.by"
+}
+
+#[test]
+fn ely_discovery_routes_to_has_joined() {
+    assert_eq!(
+        verify_endpoint("ely.by").unwrap(),
+        "https://authserver.ely.by/session/hasJoined",
+    );
+}
+
 fn verify_endpoint(discovery: &str) -> Result<String, String> {
+    if discovery == "ely.by" {
+        let doc: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../horizon-protocol/src/ely-discovery.json"
+        ))
+        .map_err(|e| e.to_string())?;
+        return doc
+            .pointer("/discovery/session/endpoints/verify/uri")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+            .ok_or_else(|| "no Ely.by session verify endpoint".to_owned());
+    }
     // The lock is not held over the request: logins must not queue behind a slow account service.
     if let Some((from, url, at)) = VERIFY_ENDPOINT
         .lock()
@@ -157,7 +180,20 @@ fn has_joined_via(discovery: &str, name: &str, hash: &str) -> Result<Option<Prof
     let url = url.as_str();
     let separator = if url.contains('?') { '&' } else { '?' };
     let query = format!("username={}&serverId={}", encode(name), encode(hash));
-    match agent().get(&format!("{url}{separator}{query}")).call() {
+    let service = if discovery == "ely.by" {
+        ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(15))
+            .redirects(0)
+            .build()
+    } else {
+        agent()
+    };
+    match service.get(&format!("{url}{separator}{query}")).call() {
+        Ok(response) if discovery == "ely.by" && response.status() == 204 => Ok(None),
+        Ok(response) if discovery == "ely.by" && response.status() != 200 => Err(format!(
+            "Ely.by session verification answered {}",
+            response.status()
+        )),
         Ok(response) => Ok(parse_joined(&response.into_string().unwrap_or_default())),
         Err(ureq::Error::Status(204 | 403 | 404, _)) => Ok(None),
         Err(e) => Err(e.to_string()),

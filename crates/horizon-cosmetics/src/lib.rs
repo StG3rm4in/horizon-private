@@ -54,10 +54,16 @@ pub const API: &str = horizon_addresses::COSMETICS_API;
 /// (development, the bench).
 pub fn enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| match std::env::var("HORIZON_COSMETICS").as_deref() {
-        Ok("1") => true,
-        Ok("0") => false,
-        _ => ON_BY_DEFAULT,
+    *ON.get_or_init(|| {
+        // Never with an Ely.by session: its sign-in joins a server id that the service chooses.
+        if std::env::var("HORIZON_API_DISCOVERY").ok().as_deref() == Some("ely.by") {
+            return false;
+        }
+        match std::env::var("HORIZON_COSMETICS").as_deref() {
+            Ok("1") => true,
+            Ok("0") => false,
+            _ => ON_BY_DEFAULT,
+        }
     })
 }
 

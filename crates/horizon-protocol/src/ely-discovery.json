@@ -1,0 +1,36 @@
+{
+  "discovery": {
+    "session": {
+      "endpoints": {
+        "join": {
+          "uri": "https://authserver.ely.by/session/join"
+        },
+        "verify": {
+          "uri": "https://authserver.ely.by/session/hasJoined"
+        },
+        "getProfileById": {
+          "uri": "https://authserver.ely.by/session/profile/{profileId}"
+        }
+      }
+    },
+    "profiles": {
+      "endpoints": {
+        "getByName": {
+          "uri": "https://authserver.ely.by/api/users/profiles/minecraft/{name}"
+        },
+        "getTexture": {
+          "validUris": [
+            "https://skinsystem.ely.by/textures/{textureId}",
+            "https://skinsystem.ely.by/skins/{textureId}",
+            "https://skinsystem.ely.by/cloaks/{textureId}",
+            "http://skinsystem.ely.by/textures/{textureId}",
+            "http://skinsystem.ely.by/skins/{textureId}",
+            "http://skinsystem.ely.by/cloaks/{textureId}",
+            "https://textures.minecraft.net/texture/{textureId}",
+            "http://textures.minecraft.net/texture/{textureId}"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1810,15 +1810,10 @@ impl Game<'_> {
                                 });
                                 if let Some(t) = e.properties.iter().find(|p| p.name == "textures")
                                 {
-                                    // Without the services' profile property keys a
-                                    // signature can't be checked; a signed property
-                                    // counts as genuine.
-                                    use horizon_client::skins::{self, Signature};
-                                    let signature = if t.signature.is_some() {
-                                        Signature::Signed
-                                    } else {
-                                        Signature::Unsigned
-                                    };
+                                    use horizon_client::skins;
+                                    let signature = skins::texture_signature(
+                                        &t.value, t.signature.as_deref(),
+                                    );
                                     let textures =
                                         skins::unpack(&t.value, signature, skins::texture_uris());
                                     r.skin_textures.entry(e.uuid).or_insert(textures);
