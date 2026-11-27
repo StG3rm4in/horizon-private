@@ -93,15 +93,9 @@ fn default_root() -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-fn main() -> ExitCode {
-    let mut options = horizon_prepare::Options {
+let mut options = horizon_prepare::Options {
         root: PathBuf::new(),
-        import: false,
-        minecraft_dir: None,
-        server_jar: None,
-        java_home: None,
-        inputs: Default::default(),
-        output: None,
+        ..Default::default()
     };
     let mut root = None;
     let mut check = false;
