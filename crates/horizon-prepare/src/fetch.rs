@@ -254,6 +254,10 @@ impl Fetch {
         if offset > size {
             file.set_len(0).map_err(error)?;
             offset = 0;
+        } else if offset > 0 {
+            // A crash can leave the last byte half-written: fetch it again rather than trust it.
+            offset -= 1;
+            file.set_len(offset).map_err(error)?;
         }
         let mut hash = Running::new(algorithm);
         if offset > 0 {
