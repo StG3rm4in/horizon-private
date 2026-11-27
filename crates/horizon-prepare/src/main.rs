@@ -95,7 +95,7 @@ fn default_root() -> Option<PathBuf> {
         .find(|d| d.join("research-lock.json").is_file())
         .map(Path::to_path_buf)
 }
-
+fn main() -> ExitCode {
 let mut options = horizon_prepare::Options {
         root: PathBuf::new(),
         ..Default::default()
