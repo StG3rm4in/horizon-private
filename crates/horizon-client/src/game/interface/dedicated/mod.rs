@@ -435,6 +435,40 @@ fn capture_log(f: impl FnOnce()) -> Vec<String> {
     CAPTURE.take().unwrap_or_default()
 }
 
+fn check_identity_preflight(dir: &std::path::Path, mixed: bool) -> std::result::Result<(), String> {
+    use horizon_server_files::user_lists;
+    if mixed {
+        return user_lists::check_mixed_folder(dir, true);
+    }
+    match user_lists::legacy_mixed_evidence_with(dir, |why| {
+        log("WARN", &format!("Could not check for mixed identities: {why}"));
+        Ok(())
+    })? {
+        Some(why) => Err(why),
+        None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn legacy_identity_preflight_warns_on_reads_and_refuses_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("ops.json")).unwrap();
+    let log = capture_log(|| check_identity_preflight(dir.path(), false).unwrap());
+    assert!(log.iter().any(|line| line.contains("ops.json")));
+
+    std::fs::write(
+        dir.path().join("whitelist.json"),
+        r#"[{"name":"ely:Alex","uuid":"12345678-1234-7234-8234-123456789abc"}]"#,
+    )
+    .unwrap();
+    let log = capture_log(|| {
+        let error = check_identity_preflight(dir.path(), false).unwrap_err();
+        assert!(error.contains("into a clean folder"), "{error}");
+    });
+    assert!(log.iter().any(|line| line.contains("ops.json")));
+}
+
 /// Main.main up to the server start: arguments, server.properties (stored
 /// back at once), eula.txt. False when the process should stop here.
 pub(super) fn preflight(options: &mut Options) -> Result<bool> {
@@ -485,9 +519,7 @@ pub(super) fn preflight(options: &mut Options) -> Result<bool> {
         }
     }
     let started = Instant::now();
-    horizon_server_files::user_lists::check_mixed_folder(
-        std::path::Path::new("."), mixed::engine_enabled(),
-    )?;
+    check_identity_preflight(std::path::Path::new("."), mixed::engine_enabled())?;
     let settings = PathBuf::from("server.properties");
     let props = ServerProperties::from_file(&settings, &mut SystemEntropy::default())?;
     for w in &props.warnings {

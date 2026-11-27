@@ -811,6 +811,8 @@ struct Entry {
     touched: std::time::Instant,
     /// `None` while the fetch is in flight.
     resolved: Option<Option<ResolvedProfile>>,
+    /// None until a completed mixed lookup can be evaluated with the provider keys.
+    mixed_head: Option<Option<(String, String)>>,
 }
 /// `ProfileResolver.Cached`'s cache bounds.
 const MAX_PROFILES: usize = 256;
@@ -961,21 +963,64 @@ impl Resolver {
         self.state_with(key, false)
     }
     fn state_with(&mut self, key: &NameOrId, paced: bool) -> Resolve {
+        self.poll_with(key, paced, Resolve::Pending, |entry| {
+            Resolve::Done(entry.and_then(|entry| entry.resolved.clone().flatten()))
+        })
+    }
+
+    /// Resolve a mixed head using the profile entry's verified download, if available.
+    pub fn mixed_head_download(&mut self, key: &NameOrId) -> Option<(String, String)> {
+        debug_assert!(self.mixed);
+        self.poll_with(key, false, None, |entry| {
+            let entry = entry?;
+            if let Some(head) = &entry.mixed_head {
+                return head.clone();
+            }
+            let profile = entry.resolved.as_ref()?.as_ref()?;
+            let textures = profile
+                .properties
+                .iter()
+                .find(|(name, _, _)| name == "textures")
+                .and_then(|(_, value, signature)| Some((value, signature.as_deref()?)));
+            let skin = match textures {
+                Some((value, signature)) => {
+                    mixed_player_textures(profile.id, value, signature)?.skin
+                }
+                None => None,
+            };
+            let head = skin.and_then(|url| {
+                let location = skin_location(&texture_hash(&url)?);
+                Some((url, location))
+            });
+            entry.mixed_head = Some(head.clone());
+            head
+        })
+    }
+
+    fn poll_with<T>(
+        &mut self,
+        key: &NameOrId,
+        paced: bool,
+        pending: T,
+        ready: impl FnOnce(Option<&mut Entry>) -> T,
+    ) -> T {
         while let Ok((key, resolved)) = self.done.try_recv() {
             self.entries.insert(
                 key,
                 Entry {
                     touched: std::time::Instant::now(),
                     resolved: Some(resolved),
+                    mixed_head: None,
                 },
             );
         }
         self.sweep();
         if let Some(entry) = self.entries.get_mut(key) {
             entry.touched = std::time::Instant::now();
-            return match &entry.resolved {
-                Some(resolved) => Resolve::Done(resolved.clone()),
-                None => Resolve::Pending,
+            return if entry.resolved.is_some() {
+                ready(Some(entry))
+            } else {
+                pending
             };
         }
         // `fetchByName` refuses an invalid name without a fetch. Answer without
@@ -984,14 +1029,14 @@ impl Resolver {
         if matches!(key, NameOrId::Name(name)
             if if routed { mixed::target(name).is_none() } else { !valid_player_name(name) })
         {
-            return Resolve::Done(None);
+            return ready(None);
         }
         // At the cap, leave the key uncached and answer `Pending`: the caller polls, and a later
         // call starts the fetch once a thread is free. Mods also leave the last slot to the
         // game and spend the minute's budget; at either limit they answer `Pending` without
         // caching, so a later call retries.
         if !self.may_start_fetch(paced) {
-            return Resolve::Pending;
+            return pending;
         }
         let entry_key = key.clone();
         self.entries.insert(
@@ -999,6 +1044,7 @@ impl Resolver {
             Entry {
                 touched: std::time::Instant::now(),
                 resolved: None,
+                mixed_head: None,
             },
         );
         self.active.fetch_add(1, Ordering::Relaxed);
@@ -1032,7 +1078,7 @@ impl Resolver {
             }
             self.entries.remove(&entry_key);
         }
-        Resolve::Pending
+        pending
     }
 }
 
@@ -1179,7 +1225,6 @@ fn prepare_head(profile: &serde_json::Value) -> HeadProfile {
 struct HeadProfiles {
     entries: std::collections::HashMap<serde_json::Value, std::sync::Arc<HeadProfile>>,
     mixed_entries: std::collections::HashMap<serde_json::Value, std::sync::Arc<HeadProfile>>,
-    mixed_resolved: std::collections::HashMap<(u128, String), std::sync::Arc<HeadProfile>>,
     nbt: std::collections::HashMap<horizon_core::nbt::Tag, std::sync::Arc<serde_json::Value>>,
     resolved: [std::collections::HashMap<String, std::sync::Arc<HeadProfile>>; 2],
 }
@@ -1249,37 +1294,20 @@ pub fn head_skin(
     }
     let mixed = resolver.is_mixed();
     let p = resolver.heads.get_mode(profile, mixed);
-    // Dynamic resolution is deliberately not cached: pending answers and the
-    // resolver's expiring service results must still advance on every draw.
+    let mixed_skin = if mixed && p.info.textures.is_none() {
+        p.info
+            .dynamic
+            .as_ref()
+            .and_then(|key| resolver.mixed_head_download(key))
+    } else {
+        None
+    };
     let resolved = p.info.dynamic.as_ref().and_then(|key| {
-        if p.info.textures.is_some() {
+        if mixed || p.info.textures.is_some() {
             return None;
         }
         match resolver.state_for_game(key) {
             Resolve::Done(Some(profile)) => {
-                if mixed {
-                    let (value, signature) = profile.textures_for(true)?;
-                    let url = unpack_known(&value, signature).skin?;
-                    let location = skin_location(&texture_hash(&url)?);
-                    let cache = &mut resolver.heads.mixed_resolved;
-                    let key = (profile.id, url.clone());
-                    if let Some(parsed) = cache.get(&key) {
-                        return Some(parsed.clone());
-                    }
-                    if cache.len() >= MAX_HEAD_PROFILES {
-                        cache.clear();
-                    }
-                    let parsed = Arc::new(HeadProfile {
-                        info: ProfileInfo {
-                            id: profile.id,
-                            textures: Some((value, signature)),
-                            dynamic: None,
-                        },
-                        skin: Some((url, location)),
-                    });
-                    cache.insert(key, parsed.clone());
-                    return Some(parsed);
-                }
                 let (_, value, signature) = profile
                     .properties
                     .iter()
@@ -1310,7 +1338,10 @@ pub fn head_skin(
             _ => None,
         }
     });
-    if let Some((url, location)) = resolved.as_deref().unwrap_or(&p).skin.as_ref() {
+    if let Some((url, location)) = mixed_skin
+        .as_ref()
+        .or_else(|| resolved.as_deref().unwrap_or(&p).skin.as_ref())
+    {
         match downloads.state(Kind::Skin, url) {
             Download::Ready if atlas(location) => {
                 downloads.drawn(location);

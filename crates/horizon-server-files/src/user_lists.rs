@@ -602,6 +602,14 @@ pub const MIXED_LISTS: [&str; 3] = ["ops.json", "whitelist.json", "banned-player
 
 /// Check the live lists and the copies from which a durable load can recover.
 pub fn legacy_mixed_evidence(dir: &std::path::Path) -> Result<Option<String>, String> {
+    legacy_mixed_evidence_with(dir, Err)
+}
+
+/// Let callers that can tolerate read failures report them and keep looking for evidence.
+pub fn legacy_mixed_evidence_with(
+    dir: &std::path::Path,
+    mut on_error: impl FnMut(String) -> Result<(), String>,
+) -> Result<Option<String>, String> {
     let marker = dir.join(MIXED_MARKER);
     let evidence = |path: &std::path::Path| {
         format!(
@@ -612,16 +620,25 @@ pub fn legacy_mixed_evidence(dir: &std::path::Path) -> Result<Option<String>, St
     match std::fs::symlink_metadata(&marker) {
         Ok(_) => return Ok(Some(evidence(&marker))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("{}: {e}", marker.display())),
+        Err(e) => on_error(format!("{}: {e}", marker.display()))?,
     }
     for file in MIXED_LISTS {
         let path = dir.join(file);
-        let copies = crate::durable::kept_copies(&path).map_err(|e| e.to_string())?;
+        let copies = match crate::durable::kept_copies(&path) {
+            Ok(copies) => copies,
+            Err(e) => {
+                on_error(e.to_string())?;
+                Vec::new()
+            }
+        };
         for path in std::iter::once(path).chain(copies) {
             let text = match std::fs::read(&path) {
                 Ok(bytes) => read_utf8(&bytes),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(format!("{}: {e}", path.display())),
+                Err(e) => {
+                    on_error(format!("{}: {e}", path.display()))?;
+                    continue;
+                }
             };
             if has_mixed_rows(&text) {
                 return Ok(Some(evidence(&path)));

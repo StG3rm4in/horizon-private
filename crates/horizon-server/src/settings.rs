@@ -107,9 +107,11 @@ pub fn parse_change(
     let value = if section == "properties" {
         config::loose_value(text)
     } else {
+        let skipped_false = toml::Value::Boolean(false);
         let like = current
             .get(section)
             .and_then(|s| s.get(field))
+            .or(((section, field) == ("proxy", "mixed_providers")).then_some(&skipped_false))
             .ok_or_else(|| {
                 format!("{key} is not a setting (`horizon-server config` lists them)")
             })?;
@@ -272,6 +274,7 @@ pub fn changeable_remotely(key: &str) -> bool {
     }
     let (section, field) = key.split_once('.').unwrap_or((key, ""));
     !matches!(section, "engine" | "panel" | "api" | "discord")
+        && (section, field) != ("proxy", "mixed_providers")
         // Files the game writes player text to, or reads its word list from.
         && !(matches!(section, "chat_filter" | "anticheat")
             && matches!(field, "log" | "words_file" | "strikes"))
@@ -299,6 +302,30 @@ pub fn shown(dir: &Path) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mixed_mode_can_be_set_locally_and_is_refused_remotely() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-settings-mixed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(config::FILE), config::TEMPLATE).unwrap();
+        command(
+            &dir,
+            &["set".to_owned(), "proxy.mixed_providers=true".to_owned()],
+        )
+        .unwrap();
+        assert!(config::Config::load(&dir).unwrap().proxy.mixed_providers);
+        command(
+            &dir,
+            &["set".to_owned(), "proxy.mixed_providers=false".to_owned()],
+        )
+        .unwrap();
+        assert!(!config::Config::load(&dir).unwrap().proxy.mixed_providers);
+        assert!(!changeable_remotely("proxy.mixed_providers"));
+        assert!(changeable_remotely("proxy.enabled"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn keys_the_api_may_not_change_stay_refused_however_spaced() {

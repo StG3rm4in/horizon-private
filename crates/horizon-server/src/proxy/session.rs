@@ -998,6 +998,37 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_a_bound_claim_ends_the_session_and_blocks_binding() {
+        use super::super::{
+            Claims, NameClaim,
+            join_tests::{FakeGame, join, proxy_for, temp_dir},
+        };
+        use horizon_platform::protocol::connection::Pipe;
+
+        let dir = temp_dir("bound-claim");
+        let secret = super::super::secret(&dir).unwrap();
+        let game = FakeGame::start(&secret);
+        let (proxy, port) = proxy_for(&game, &dir);
+        proxy.game_up();
+        let _client = join(port, "Alex", &[]);
+        let session = session_named(&proxy, "Alex");
+
+        // Use an independent connection so closing the claim's pipe cannot end the session.
+        let (local, _peer) = Pipe::pair();
+        let closer = Connection::local(local).reader.closer().unwrap();
+        let claims = Claims::default();
+        let claim = NameClaim::acquire(&claims, "Alex", session.identity.1, closer, true).unwrap();
+        assert!(claim.bind(&session));
+        claim.state.cancel();
+        assert!(session.lock().ended);
+        assert!(proxy.inner.snapshot().is_empty());
+        assert!(!claim.bind(&session));
+
+        game.stop();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn a_busy_writer_does_not_stop_the_keep_alives_of_the_other_sessions() {
         use super::super::join_tests::{FakeGame, join, proxy_for, temp_dir};
         let dir = temp_dir("busy-writer");

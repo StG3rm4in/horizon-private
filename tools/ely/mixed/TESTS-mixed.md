@@ -1,8 +1,28 @@
 # Mixed-provider tests
 
-Apply the core patch and the fourth pass to an isolated copy of `7f548a1617`, then run rustfmt. Use the exact filters below from the workspace root. The fourth pass was checked by source inspection.
+Apply `patch_mixed5.py` to an isolated copy of the formatted `src-mixed4` tree and run `cargo fmt --all` in the checkout. The fifth pass was prepared by source inspection. Patch application, builds, tests, rustfmt, and clippy are pending on a writable checkout.
 
-## Patch tests by crate
+## Fifth-pass tests
+
+| Crate | Command |
+|---|---|
+| `horizon-server` | `cargo test -p horizon-server --lib cancelling_a_bound_claim_ends_the_session_and_blocks_binding` |
+| `horizon-server` | `cargo test -p horizon-server --lib identity_restart_keeps_verdict_on_read_error_and_stops_on_refusal` |
+| `horizon-server` | `cargo test -p horizon-server --lib mixed_cold_start_uses_success_for_refusal_and_failure_for_read_errors` |
+| `horizon-server` | `cargo test -p horizon-server --lib legacy_restores_continue_after_list_read_errors` |
+| `horizon-server` | `cargo test -p horizon-server --lib stopped_legacy_edits_only_need_to_read_their_own_list` |
+| `horizon-server` | `cargo test -p horizon-server --lib mixed_mode_can_be_set_locally_and_is_refused_remotely` |
+| `horizon-client` | `cargo test -p horizon-client --lib legacy_identity_preflight_warns_on_reads_and_refuses_evidence` |
+| `horizon-client` | `cargo test -p horizon-client --lib placed_head_uses_embedded_skin_only_in_legacy_mode` |
+
+The fifth pass also updates two existing tests. Run the launcher test after applying the revised Ely launcher patch. The launcher is a separate Cargo workspace, so its command specifies the manifest.
+
+| Crate | Command |
+|---|---|
+| `horizon-server` | `cargo test -p horizon-server --lib reviewed_mixed_backup_marker_and_restore_mode_follow_the_folder` |
+| `horizon-launcher` | `cargo test --manifest-path launcher/Cargo.toml -p horizon-launcher --lib ely_client_disables_cosmetics_and_clears_overrides` |
+
+## Earlier mixed-provider tests
 
 | Crate | Command |
 |---|---|
@@ -10,7 +30,6 @@ Apply the core patch and the fourth pass to an isolated copy of `7f548a1617`, th
 | `horizon-server` | `cargo test -p horizon-server --lib reviewed_mixed_classifies_provider_misses_and_names` |
 | `horizon-server` | `cargo test -p horizon-server --lib mixed_verification_orders_calls_and_records_provider` |
 | `horizon-server` | `cargo test -p horizon-server --lib reviewed_mixed_claims_inherit_cancel_and_keep_replacement_ownership` |
-| `horizon-server` | `cargo test -p horizon-server --lib reviewed_mixed_backup_marker_and_restore_mode_follow_the_folder` |
 | `horizon-server-files` | `cargo test -p horizon-server-files --lib mixed_list_lookup_routes_names_without_fallback` |
 | `horizon-server-files` | `cargo test -p horizon-server-files --lib mixed_lists_require_qualified_namespace_matched_rows` |
 | `horizon-server-files` | `cargo test -p horizon-server-files --lib reviewed_mixed_folder_evidence_requires_matching_uuid_and_name` |
@@ -23,13 +42,11 @@ Apply the core patch and the fourth pass to an isolated copy of `7f548a1617`, th
 | `horizon-server-launch` | `cargo test -p horizon-server-launch --lib reviewed_mixed_config_render_keeps_legacy_and_mixed_round_trips` |
 | `horizon-server` | `cargo test -p horizon-server --lib unattended_init_writes_everything -- --ignored` |
 
-`unattended_init_writes_everything` already carries the daily ignore attribute. For the incorporated engine fix, the corresponding test is `cargo test -p horizon-server --lib a_relative_folder_reaches_the_game_whole -- --ignored` on Linux.
+For the incorporated engine fix, run `cargo test -p horizon-server --lib a_relative_folder_reaches_the_game_whole -- --ignored` on Linux.
 
 ## Existing regression suites
 
-Run `cargo test -p horizon-server --lib`, `cargo test -p horizon-server-files --lib`, `cargo test -p horizon-client-render --lib skins::`, `cargo test -p horizon-client-render --lib auth::`, and `cargo test -p horizon-client-lib --lib mixed` in the complete deployment workspace. Repeat the previous `cargo check` with and without `upstream-parallel-mob-islands` and the three CI clippy invocations with `-D warnings`.
-
-The cosmetics account flow uses its existing behavior. Run its account tests explicitly.
+Run `cargo test -p horizon-server --lib`, `cargo test -p horizon-server-files --lib`, `cargo test -p horizon-client-render --lib skins::`, `cargo test -p horizon-client-render --lib auth::`, and `cargo test -p horizon-client-lib --lib mixed` in the deployment workspace. Repeat the previous `cargo check` with and without `upstream-parallel-mob-islands` and the three CI clippy invocations with `-D warnings`.
 
 | Crate | Command |
 |---|---|
@@ -42,12 +59,12 @@ The cosmetics account flow uses its existing behavior. Run its account tests exp
 
 ## Deployment acceptance
 
-1. Apply the launcher patch to a Prism wrapper with the cosmetics patch and to a deployment copy of `patch_ely_launcher.py`. Check that applying again fails during preflight. Launch both with a parent environment containing `HORIZON_MIXED_PROVIDERS=1` and `HORIZON_COSMETICS=1`. Verify the game receives the deployment address and cosmetics value `0` and that its environment lacks `HORIZON_MIXED_PROVIDERS`.
-2. Start legacy mode with offline bans for `ely:x` and `mojang:x`, then with a bare foreign v7/v8 UUID. Each start should proceed. Repeat with valid qualified live and durable rows, and with the marker alone. Each confirmed refusal should log the clean-folder rollback instruction and exit 0. Mixed startup with an absent or invalid marker or an unmet mixed prerequisite should also exit 0. An I/O error in the cold-start identity check should exit non-zero.
-3. Restart the engine with a temporary identity-check I/O failure at either of the supervisor's two rechecks. Verify that the supervisor logs the failure, retains its prior start verdict, and continues supervising. Clear the error and verify that a later confirmed refusal stops startup. Edit the mode while the supervisor runs and verify that it retains its pinned mode.
-4. Inspect both manual and scheduled mixed ZIPs for `.horizon/mixed-identities-v1`. Exercise whole-world, dimension, and queued restores using a valid mixed archive. Repeat with a missing marker, malformed marker, incompatible row, and duplicate effective UUID. Check that refused restores leave the live world untouched. With the setting off, test both restore commands using a legacy archive and a destination with mixed evidence. Also verify that a clean legacy destination refuses an archive carrying the mixed marker.
-5. Start a legacy proxied deployment using a rendered config with `[proxy]` and mixed mode off. Check that the older server accepts the file. Confirm that default init, init from a vanilla properties file, explicit `mixed_providers = false`, and a true mixed config all produce the expected render and parse results.
-6. Join from each launcher with Mojang and Ely.by profiles. Test a different host or port that sends a matching-looking property. Verify case-insensitive host matching and the default port when configured for `25565`. Confirm cosmetics stay disabled on the two launch paths and legacy cosmetics-enabled sign-in keeps the existing challenge handling.
-7. Delay each texture-key endpoint in turn. Login should reach configuration and pending skins should update after the keys arrive. A transient failure should recover after the cooldown. Try unsigned and invalid properties. Render mixed item and placed heads for explicit provider names and effective Ely.by IDs. Check that embedded properties and ambiguous bare v4 IDs give the default skin, resource-pack overrides still work, and legacy heads retain their embedded textures.
-8. While the engine is up, attempt an unlisted same-name login alongside an admitted account. Verify that backend refusal leaves the eventual admission available. While the engine is down, check same-name inheritance, UUID conflicts, case variants, renames, and overlapping login and reattach. The unit test covers claim ownership and connection cancellation. This scenario covers the session and backend wiring.
-9. Exercise stored-row removal over console, in-game commands, stopped CLI, and control API. Test mixed bulk replacement with retained rows, blank input, unresolved names, mismatched UUID/name pairs, and an unreachable profile endpoint. Invalid requests should leave the lists intact. Check qualified events, whitelist reload error feedback, UUID anticheat kicks, chat keys, and the installed Noelcraft permissions and ownership checks with both providers.
+1. Apply each fifth-pass script and verify that repeating the application fails during preflight. For both launch paths, start with `HORIZON_MIXED_PROVIDERS=1` and `HORIZON_COSMETICS=1` in the parent environment. Verify that the game receives the deployment address and cosmetics value `0`, and that its environment lacks `HORIZON_MIXED_PROVIDERS`.
+2. Start legacy mode with offline bans for `ely:x` and `mojang:x`, then with a bare foreign v7/v8 UUID. Each start should proceed. Repeat with valid qualified live and durable rows and with the marker alone. Confirmed refusals should give the clean-folder instruction and exit 0. Mixed startup with an absent or invalid marker or an unmet mixed prerequisite should also exit 0. A cold-start identity-check I/O error should exit non-zero.
+3. Restart the engine with a temporary read error at either supervisor recheck. Verify the warning and the retained verdict. Clear the error and verify that a later confirmed refusal stops startup. Edit the mode while the supervisor runs and verify that it retains its pinned mode. With mixed mode off, check that standalone engine preflight warns and proceeds past the identity check when a list is unreadable.
+4. Inspect manual and scheduled mixed ZIPs for the migration marker. Exercise whole-world, dimension, queued, and update-rollback restores with valid archives. Repeat with missing markers, malformed markers, incompatible rows, and duplicate effective UUIDs. Check that refusal leaves the live world intact. With the setting off, exercise both restore commands with an unreadable list and a clean legacy ZIP. Confirm they proceed until readable mixed evidence is present. Verify that a legacy destination without evidence refuses a ZIP carrying the mixed marker.
+5. Check default init, vanilla import, legacy `[proxy]` rendering, and the round trip with mixed mode on. Verify local `horizon-server config proxy.mixed_providers=true` and confirm the control API and panel refuse edits to that field.
+6. Join from each launcher using both providers. Test different addresses with a matching-looking property, case-insensitive host matching, the default port, and the cosmetics settings. Confirm legacy cosmetics sign-in still uses its existing challenge handling.
+7. Delay each provider's texture keys and confirm the default skin gives way to the verified skin after the keys arrive. Draw item and placed heads for qualified names and effective Ely.by UUIDs. Check that repeated draws reuse the completed profile result, embedded textures and ambiguous v4 IDs give the mixed-mode default, resource-pack overrides still work, and legacy heads retain their embedded textures.
+8. Try an unlisted same-name login alongside an admitted account while the engine is up. Verify that backend refusal leaves admission available. During downtime, check claim inheritance, UUID conflicts, case variants, renames, and overlapping login and reattach. This exercises the login wiring with the backend.
+9. Exercise stored-row removal over console, in-game commands, stopped CLI, and control API. Test mixed bulk replacement with retained rows, blank input, unresolved names, mismatched UUID/name pairs, and an unreachable profile endpoint. Verify list integrity, qualified events, whitelist reload feedback, UUID anticheat kicks, chat keys, and Noelcraft permissions and ownership under both providers.

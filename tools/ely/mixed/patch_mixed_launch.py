@@ -41,24 +41,50 @@ def staged_copy(path, content, mode):
         raise
 
 
+def extend_launcher_test(path, content, newline, host):
+    cosmetics = (
+        '        assert_eq!(overrides.get(OsStr::new("HORIZON_COSMETICS")), '
+        'Some(&Some(OsStr::new("0"))));'
+    )
+    removals = (
+        '        for name in ["HORIZON_COSMETICS_API", "HORIZON_COSMETICS_LOCAL", '
+        '"HORIZON_SESSION_FILE"] {'
+    )
+    anchor = newline.join((cosmetics.encode(), removals.encode(), b""))
+    replacement = newline.join((
+        cosmetics.encode(),
+        b'        assert_eq!(overrides.get(OsStr::new("HORIZON_MIXED_CLIENT")),',
+        f'            Some(&Some(OsStr::new("{host}"))));'.encode(),
+        removals.replace('"HORIZON_SESSION_FILE"]',
+                         '"HORIZON_SESSION_FILE", "HORIZON_MIXED_PROVIDERS"]').encode(),
+        b"",
+    ))
+    if content.count(anchor) != 1:
+        raise ValueError(f"{path}: expected one original ely-play environment test")
+    return content.replace(anchor, replacement, 1)
+
+
 def main():
     if len(sys.argv) != 4:
         raise ValueError(f"usage: {Path(sys.argv[0]).name} SERVER_ROOT ELY_LAUNCHER_PATCH HOST:PORT")
     _, root, launcher, host = sys.argv
     host = address(host)
     wrapper = Path(root) / "client/prism/wrapper/src/main.rs"
-    inputs = ((wrapper, "        "), (Path(launcher), "        "))
+    inputs = ((wrapper, False), (Path(launcher), True))
     changes = {}
-    for path, indent in inputs:
+    for path, is_launcher in inputs:
         path = path.resolve(strict=True)
         original = path.read_bytes()
         newline = b"\r\n" if b"\r\n" in original else b"\n"
-        anchor = (indent + '.env("HORIZON_COSMETICS", "0")').encode() + newline
-        remove_engine = (indent + '.env_remove("HORIZON_MIXED_PROVIDERS")').encode() + newline
-        addition = (indent + f'.env("HORIZON_MIXED_CLIENT", "{host}")').encode() + newline
+        anchor = b'        .env("HORIZON_COSMETICS", "0")' + newline
+        remove_engine = b'        .env_remove("HORIZON_MIXED_PROVIDERS")' + newline
+        addition = f'        .env("HORIZON_MIXED_CLIENT", "{host}")'.encode() + newline
         if b"HORIZON_MIXED_CLIENT" in original or original.count(anchor) != 1:
             raise ValueError(f"{path}: expected one original cosmetics setting and no mixed setting")
-        changes[path] = (original, original.replace(anchor, anchor + remove_engine + addition, 1))
+        revised = original.replace(anchor, anchor + remove_engine + addition, 1)
+        if is_launcher:
+            revised = extend_launcher_test(path, revised, newline, host)
+        changes[path] = (original, revised)
 
     staged = {}
     backups = {}

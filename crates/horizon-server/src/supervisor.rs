@@ -264,7 +264,6 @@ fn check_identity_mode(dir: &Path, config: &Config) -> Result<bool, String> {
 }
 
 pub fn run(dir: &Path) -> Result<(), String> {
-    signals::install();
     let config = Config::load(dir)?;
     let _lock = lock(dir)?;
     if !check_identity_mode(dir, &config)? {
@@ -1150,6 +1149,31 @@ impl EngineWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_restart_keeps_verdict_on_read_error_and_stops_on_refusal() {
+        use horizon_platform::server_files::user_lists::MIXED_MARKER;
+
+        let dir =
+            std::env::temp_dir().join(format!("horizon-restart-verdict-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let unreadable = dir.join("ops.json");
+        std::fs::create_dir_all(&unreadable).unwrap();
+        let shared = Shared::with_install(&dir, None);
+        assert!(identity_mode_allows_restart(&shared, &dir, false));
+        assert!(shared.log.lock().unwrap().since(0).1.iter().any(|line| {
+            line.contains("Supervisor/WARN")
+                && line.contains("ops.json")
+                && line.contains("Keeping the previous start verdict")
+        }));
+        std::fs::remove_dir(unreadable).unwrap();
+
+        let marker = dir.join(MIXED_MARKER);
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(marker, b"marker").unwrap();
+        assert!(!identity_mode_allows_restart(&shared, &dir, false));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// A restore asked for while the game is stopped is done before the next start (the loop's
     /// head runs `apply_queued`), not left queued for some later restart.

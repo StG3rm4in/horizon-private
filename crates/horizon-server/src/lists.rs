@@ -52,8 +52,13 @@ fn edit_locked(
     command: &str,
     args: &[&str],
 ) -> Result<Edit, String> {
+    use horizon_platform::server_files::user_lists;
     let mixed = config.proxy.mixed_providers;
-    horizon_platform::server_files::user_lists::check_mixed_folder(dir, mixed)?;
+    if mixed {
+        user_lists::check_mixed_folder(dir, true)?;
+    } else if let Some(why) = user_lists::legacy_mixed_evidence_with(dir, |_| Ok(()))? {
+        return Err(why);
+    }
     let account = |name| account_mode(name, config.server.online_mode, mixed);
     let ops_path = dir.join("ops.json");
     let white_path = dir.join("whitelist.json");
@@ -362,6 +367,25 @@ fn load<E: horizon_platform::server_files::user_lists::Entry>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stopped_legacy_edits_only_need_to_read_their_own_list() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-stopped-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("ops.json")).unwrap();
+        let mut config = config::Config::default();
+        config.server.online_mode = false;
+        assert!(edit_locked(&dir, &config, "whitelist", &["add", "Alex"]).is_ok());
+        assert!(edit_locked(&dir, &config, "op", &["Alex"]).is_err());
+        std::fs::write(
+            dir.join("banned-players.json"),
+            r#"[{"name":"ely:Alex","uuid":"12345678-1234-7234-8234-123456789abc"}]"#,
+        )
+        .unwrap();
+        assert!(edit_locked(&dir, &config, "whitelist", &["add", "Other"]).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn unreadable_lists_are_rejected(name: &str, directory: bool, bytes: &[u8]) {
         let dir = std::env::temp_dir().join(format!(

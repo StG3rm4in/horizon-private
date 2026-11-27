@@ -278,17 +278,33 @@ pub fn find(dir: &Path, name: &str) -> Result<String, String> {
         })
 }
 
-fn restore_requires_mixed(dir: &Path, config: &Config) -> Result<bool, String> {
-    if config.proxy.mixed_providers {
-        return Ok(true);
-    }
-    Ok(user_lists::legacy_mixed_evidence(dir)?.is_some())
+fn check_restore_destination(
+    zip: &mut ZipArchive<File>,
+    name: &str,
+    dir: &Path,
+    config: &Config,
+) -> Result<(), String> {
+    let evidence = if config.proxy.mixed_providers {
+        None
+    } else {
+        user_lists::legacy_mixed_evidence_with(dir, |why| {
+            eprintln!("[Restore/WARN] Could not check for mixed identities: {why}");
+            Ok(())
+        })?
+    };
+    check_restore_archive(
+        zip,
+        name,
+        config.proxy.mixed_providers || evidence.is_some(),
+        evidence.as_deref(),
+    )
 }
 
 fn check_restore_archive(
     zip: &mut ZipArchive<File>,
     name: &str,
     mixed: bool,
+    evidence: Option<&str>,
 ) -> Result<(), String> {
     use std::io::Read;
 
@@ -309,8 +325,9 @@ fn check_restore_archive(
         return Ok(());
     }
     if !marker {
-        return Err(format!(
-            "{name}: backup is missing a valid mixed migration marker"
+        return Err(evidence.map_or_else(
+            || format!("{name}: backup is missing a valid mixed migration marker"),
+            str::to_owned,
         ));
     }
     for file in user_lists::MIXED_LISTS {
@@ -341,7 +358,7 @@ pub fn restore(dir: &Path, config: &Config, name: &str) -> Result<Option<PathBuf
     let result = (|| {
         let file = File::open(&zip_path).map_err(|e| format!("{}: {e}", zip_path.display()))?;
         let mut zip = ZipArchive::new(file).map_err(|e| format!("{name}: {e}"))?;
-        check_restore_archive(&mut zip, name, restore_requires_mixed(dir, config)?)?;
+        check_restore_destination(&mut zip, name, dir, config)?;
         zip.extract(&scratch).map_err(|e| format!("{name}: {e}"))
     })();
     if let Err(e) = result {
@@ -430,7 +447,7 @@ pub fn restore_dimension(
     let result = (|| {
         let file = File::open(&zip_path).map_err(|e| format!("{}: {e}", zip_path.display()))?;
         let mut zip = ZipArchive::new(file).map_err(|e| format!("{name}: {e}"))?;
-        check_restore_archive(&mut zip, name, restore_requires_mixed(dir, config)?)?;
+        check_restore_destination(&mut zip, name, dir, config)?;
         let mut files = 0;
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i).map_err(|e| format!("{name}: {e}"))?;
@@ -519,9 +536,9 @@ mod tests {
         let legacy_name = "legacy.zip";
         let legacy_path = create(&dir, &legacy, legacy_name).unwrap();
         let mut zip = ZipArchive::new(File::open(legacy_path).unwrap()).unwrap();
-        assert!(check_restore_archive(&mut zip, legacy_name, false).is_ok());
+        assert!(check_restore_archive(&mut zip, legacy_name, false, None).is_ok());
         assert!(
-            check_restore_archive(&mut zip, legacy_name, true)
+            check_restore_archive(&mut zip, legacy_name, true, None)
                 .unwrap_err()
                 .contains("missing a valid mixed migration marker")
         );
@@ -546,7 +563,7 @@ mod tests {
                 restore_dimension(&dir, &legacy, legacy_name, "minecraft:overworld").unwrap_err(),
             ] {
                 assert!(
-                    error.contains("missing a valid mixed migration marker"),
+                    error.contains("into a clean folder to return to legacy mode"),
                     "{error}"
                 );
             }
@@ -565,9 +582,9 @@ mod tests {
             std::io::Read::read_to_string(&mut entry, &mut marker_value).unwrap();
             assert_eq!(marker_value, user_lists::MIXED_MARKER_VALUE);
         }
-        assert!(check_restore_archive(&mut zip, mixed_name, true).is_ok());
+        assert!(check_restore_archive(&mut zip, mixed_name, true, None).is_ok());
         assert!(
-            check_restore_archive(&mut zip, mixed_name, false)
+            check_restore_archive(&mut zip, mixed_name, false, None)
                 .unwrap_err()
                 .contains("mixed backup requires mixed mode")
         );
@@ -578,6 +595,46 @@ mod tests {
         assert!(restore(&dir, &mixed, mixed_name).unwrap().is_some());
         assert_eq!(std::fs::read(&level).unwrap(), b"live");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_restores_continue_after_list_read_errors() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-legacy-restore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let config = Config::default();
+        for kind in ["whole", "dimension"] {
+            let dir = root.join(kind);
+            let region = dir.join("world/dimensions/minecraft/overworld/region/r.0.0.mca");
+            std::fs::create_dir_all(region.parent().unwrap()).unwrap();
+            std::fs::write(dir.join("world/level.dat"), b"level").unwrap();
+            std::fs::write(&region, b"archived").unwrap();
+            let name = "before.zip";
+            create(&dir, &config, name).unwrap();
+            std::fs::create_dir(dir.join("ops.json")).unwrap();
+            std::fs::write(&region, b"live").unwrap();
+
+            let restore = || {
+                if kind == "whole" {
+                    restore(&dir, &config, name)
+                } else {
+                    restore_dimension(&dir, &config, name, "minecraft:overworld")
+                }
+            };
+            let list = dir.join("whitelist.json");
+            std::fs::write(
+                &list,
+                r#"[{"name":"ely:Alex","uuid":"12345678-1234-7234-8234-123456789abc"}]"#,
+            )
+            .unwrap();
+            assert!(restore().unwrap_err().contains("into a clean folder"));
+            assert_eq!(std::fs::read(&region).unwrap(), b"live");
+
+            std::fs::remove_file(list).unwrap();
+            assert!(restore().unwrap().is_some());
+            assert_eq!(std::fs::read(&region).unwrap(), b"archived");
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

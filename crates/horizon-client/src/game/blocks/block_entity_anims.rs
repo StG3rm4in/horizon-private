@@ -957,28 +957,7 @@ impl Game<'_> {
         {
             return Some(sprite);
         }
-        // The texture a packed or resolved `textures` property fetches: the
-        // download of a static profile, or the one the services answer for a
-        // `Dynamic` (name- or id-only) profile.
-        let mut resolver = self.skin_profiles.borrow_mut();
-        let mixed = resolver.is_mixed();
-        let dynamic = if mixed {
-            skull.profile.as_ref().and_then(|p| skins::dynamic_nbt_for(p, true))
-        } else {
-            skin.dynamic.clone()
-        };
-        let embedded = if mixed { None } else { skin.download.clone() };
-        let download = embedded.or_else(|| {
-            let key = dynamic.as_ref()?;
-            let skins::Resolve::Done(Some(profile)) = resolver.state_for_game(key) else {
-                return None;
-            };
-            let (value, signature) = profile.textures_for(mixed)?;
-            let url = skins::unpack(&value, signature, skins::texture_uris()).skin?;
-            let location = skins::skin_location(&skins::texture_hash(&url)?);
-            Some((url, location))
-        });
-        drop(resolver);
+        let download = placed_head_download(skull, &mut self.skin_profiles.borrow_mut());
         if let Some((url, location)) = download {
             let mut downloads = self.skin_downloads.borrow_mut();
             if self.gui.atlas.sprites.contains_key(&location) {
@@ -995,10 +974,44 @@ impl Game<'_> {
     }
 }
 
+fn placed_head_download(
+    skull: &horizon_client::containers::Skull,
+    resolver: &mut skins::Resolver,
+) -> Option<(String, String)> {
+    if resolver.is_mixed() {
+        let key = skins::dynamic_nbt_for(skull.profile.as_ref()?, true)?;
+        return resolver.mixed_head_download(&key);
+    }
+    let skin = skull.skin.as_ref()?;
+    skin.download.clone().or_else(|| {
+        let key = skin.dynamic.as_ref()?;
+        let skins::Resolve::Done(Some(profile)) = resolver.state_for_game(key) else {
+            return None;
+        };
+        let (value, signature) = profile.textures()?;
+        let url = skins::unpack(&value, signature, skins::texture_uris()).skin?;
+        let location = skins::skin_location(&skins::texture_hash(&url)?);
+        Some((url, location))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn placed_head_uses_embedded_skin_only_in_legacy_mode() {
+        let value = "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHBzOi8vdGV4dHVyZXMubWluZWNyYWZ0Lm5ldC90ZXh0dXJlL2FiYyJ9fX0=";
+        let profile = format!(r#"{{name:"Alex",properties:[{{name:"textures",value:"{value}"}}]}}"#);
+        let (tag, _) = horizon_core::nbt::parse_snbt(&profile).unwrap();
+        let skull = horizon_client::containers::Skull::new(Some(tag), None, None);
+        let mut resolver = skins::Resolver::new();
+        let (url, _) = placed_head_download(&skull, &mut resolver).unwrap();
+        assert_eq!(url, "https://textures.minecraft.net/texture/abc");
+        resolver.set_mixed(true);
+        assert!(placed_head_download(&skull, &mut resolver).is_none());
+    }
 
     #[test]
     #[ignore = "daily"]

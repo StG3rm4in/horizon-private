@@ -133,6 +133,7 @@ pub fn main() -> ExitCode {
         }
         Some("init") => init_answers(&args[1..]).and_then(|a| init::run(&dir, a)),
         Some("run") => {
+            signals::install();
             let done = supervisor::run(&dir);
             signals::stopped();
             done
@@ -181,6 +182,10 @@ pub fn main() -> ExitCode {
             "unknown command {other}; `horizon-server help` lists them"
         )),
     };
+    command_exit_code(result)
+}
+
+fn command_exit_code(result: Result<(), String>) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -188,6 +193,24 @@ pub fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn mixed_cold_start_uses_success_for_refusal_and_failure_for_read_errors() {
+    let dir = std::env::temp_dir().join(format!("horizon-start-status-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let marker = dir.join(horizon_platform::server_files::user_lists::MIXED_MARKER);
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(dir.join(config::FILE), config::TEMPLATE).unwrap();
+
+    std::fs::write(&marker, b"marker").unwrap();
+    assert_eq!(command_exit_code(supervisor::run(&dir)), ExitCode::SUCCESS);
+    std::fs::remove_file(marker).unwrap();
+
+    std::fs::create_dir(dir.join("ops.json")).unwrap();
+    assert_eq!(command_exit_code(supervisor::run(&dir)), ExitCode::FAILURE);
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 fn logs(dir: &std::path::Path, args: &[String]) -> Result<(), String> {
