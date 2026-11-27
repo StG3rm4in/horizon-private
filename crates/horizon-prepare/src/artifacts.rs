@@ -850,11 +850,14 @@ pub(crate) fn import_manifest(
 
 /// The server jar, or `None` when a Prism install has none and the client jar stands in for it
 /// (the client jar contains every server class, so the exporters and data generator run on it).
+#[allow(clippy::too_many_arguments)]
 fn import_server(
     lock: &Lock,
     server_jar: Option<&Path>,
+    pinned: Option<(&str, u64)>,
     fetch: Option<&crate::fetch::Fetch>,
     client_fallback: bool,
+    log: Log,
 ) -> Result<Option<PathBuf>, String> {
     let version = &lock.version;
     let destination = lock.directory.join("jars/server.jar");
@@ -865,6 +868,11 @@ fn import_server(
         .or_else(|| std::env::var_os("HORIZON_SERVER_JAR").map(PathBuf::from));
     let Some(source) = source else {
         if destination.exists() && digest(&destination, "sha1")? == checksum {
+            return Ok(Some(destination));
+        }
+        if let (Some(fetch), Some((url, size))) = (fetch, pinned) {
+            log(&format!("Fetching the {version} server jar"));
+            fetch.file(url, checksum, "sha1", size, &destination, log)?;
             return Ok(Some(destination));
         }
         if client_fallback {
@@ -1185,7 +1193,7 @@ pub fn import(
             files.folder.display(),
         ));
     }
-    let manifest = import_manifest(lock, &files)?;
+    let manifest = import_manifest(lock, &files, fetch, log)?;
     let downloads = manifest.get("downloads");
     let client = import_pinned(
         &files.client,
@@ -1264,7 +1272,17 @@ pub fn import(
     let server = if inputs.official_local.is_some() {
         None
     } else {
-        import_server(lock, server_jar, files.prism.is_some())?
+        let pinned = downloads
+            .and_then(|d| d.get("server"))
+            .and_then(|server| {
+                let url = server.get("url").and_then(Value::as_str)?;
+                let size = server
+                    .get("size")
+                    .and_then(Value::as_i64)
+                    .and_then(|size| u64::try_from(size).ok())?;
+                Some((url, size))
+            });
+        import_server(lock, server_jar, pinned, fetch, files.prism.is_some(), log)?
     };
     let (server, server_libraries, server_from_client) = match server {
         Some(server) => {
@@ -2039,6 +2057,7 @@ mod tests {
                 Some(&prism),
                 &Inputs::default(),
                 Some(&server),
+                None,
                 &|_| {},
             )
         };
