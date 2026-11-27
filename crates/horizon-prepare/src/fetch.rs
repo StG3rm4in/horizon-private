@@ -472,8 +472,9 @@ mod tests {
             vec![tiny_http::Header::from_bytes(&b"Connection"[..], &b"close"[..]).unwrap()];
         if ranged {
             let value = format!("bytes {start}-{}/{total}", total - 1);
-            headers
-                .push(tiny_http::Header::from_bytes(&b"Content-Range"[..], value.as_bytes()).unwrap());
+            headers.push(
+                tiny_http::Header::from_bytes(&b"Content-Range"[..], value.as_bytes()).unwrap(),
+            );
         }
         // The advertised length stays the real one: a short body is what a cut connection is.
         let limit = match mode {
@@ -565,7 +566,10 @@ mod tests {
         assert!(!f.partial().exists());
         // Le dernier octet gardé est redemandé : un arrêt brutal a pu le laisser à moitié écrit.
         let ranges = f.ranges.lock().unwrap().clone();
-        assert!(ranges.contains(&format!("bytes={}-", kept - 1)), "{ranges:?}");
+        assert!(
+            ranges.contains(&format!("bytes={}-", kept - 1)),
+            "{ranges:?}"
+        );
     }
 
     #[test]
@@ -579,7 +583,10 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("expected sha1"), "{error}");
         assert!(!f.destination().exists());
-        assert!(!f.partial_for(&wrong).exists(), "the rejected bytes are dropped");
+        assert!(
+            !f.partial_for(&wrong).exists(),
+            "the rejected bytes are dropped"
+        );
         assert!(!f.partial().exists(), "no partial under the pinned name");
     }
 
@@ -607,15 +614,13 @@ mod tests {
     fn a_document_is_read_in_memory_and_checked() {
         let f = Fixture::new("document", Mode::Plain);
         let checksum = f.sha1();
-        let data = f
-            .fetch()
-            .bytes(&f.url, &checksum, "sha1")
-            .unwrap();
+        let data = f.fetch().bytes(&f.url, &checksum, "sha1").unwrap();
         assert_eq!(data, f.data);
-        assert!(f
-            .fetch()
-            .bytes(&f.url, &"0".repeat(40), "sha1")
-            .is_err());
-        assert_eq!(f.requests.load(Ordering::Relaxed), 4, "three tries for the wrong hash");
+        assert!(f.fetch().bytes(&f.url, &"0".repeat(40), "sha1").is_err());
+        assert_eq!(
+            f.requests.load(Ordering::Relaxed),
+            4,
+            "three tries for the wrong hash"
+        );
     }
 }

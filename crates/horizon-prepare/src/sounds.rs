@@ -77,20 +77,44 @@ fn is_sound(name: &str) -> bool {
 /// `.local/horizon-client/<version>`; returns that folder. Files already there with the right
 /// SHA-1 are kept.
 pub fn sounds(root: &Path, minecraft: Option<&Path>, log: Log) -> Result<PathBuf, String> {
-    add_assets("sounds", root, None, minecraft, &Inputs::default(), false, log)
+    add_assets(
+        "sounds",
+        root,
+        None,
+        minecraft,
+        &Inputs::default(),
+        false,
+        log,
+    )
 }
 
 /// Replaces the client JAR's 1x1 title placeholders with the full panorama from the
 /// launcher's asset store. Also usable on already-prepared resources without Java.
 pub fn panorama(root: &Path, minecraft: Option<&Path>, log: Log) -> Result<PathBuf, String> {
-    add_assets("panorama", root, None, minecraft, &Inputs::default(), false, log)
+    add_assets(
+        "panorama",
+        root,
+        None,
+        minecraft,
+        &Inputs::default(),
+        false,
+        log,
+    )
 }
 
 /// Replaces the client JAR's empty `font/include/unifont.json` with the asset index's, and
 /// adds the GNU Unifont glyphs it names (`font/unifont*.zip`): the default font's fallback for
 /// every character the bitmap fonts lack (#1076). Also usable on prepared resources without Java.
 pub fn fonts(root: &Path, minecraft: Option<&Path>, log: Log) -> Result<PathBuf, String> {
-    add_assets("fonts", root, None, minecraft, &Inputs::default(), false, log)
+    add_assets(
+        "fonts",
+        root,
+        None,
+        minecraft,
+        &Inputs::default(),
+        false,
+        log,
+    )
 }
 
 /// Every bundled language and the language list, both of which only the asset index holds
@@ -98,7 +122,15 @@ pub fn fonts(root: &Path, minecraft: Option<&Path>, log: Log) -> Result<PathBuf,
 /// language screen offers, `minecraft/lang/<code>.json` the strings each one draws (#1272).
 /// Also usable on already-prepared resources without Java.
 pub fn languages(root: &Path, minecraft: Option<&Path>, log: Log) -> Result<PathBuf, String> {
-    add_assets("languages", root, None, minecraft, &Inputs::default(), false, log)
+    add_assets(
+        "languages",
+        root,
+        None,
+        minecraft,
+        &Inputs::default(),
+        false,
+        log,
+    )
 }
 
 const LANGUAGES: [&str; 1] = ["pack.mcmeta"];
@@ -185,7 +217,15 @@ const UNIFONT: [&str; 2] = [
 /// Packs made to sit on Programmer Art, like Golden Days, show the default textures without it.
 /// Also usable on prepared resources without Java.
 pub fn packs(root: &Path, minecraft: Option<&Path>, log: Log) -> Result<PathBuf, String> {
-    add_assets("packs", root, None, minecraft, &Inputs::default(), false, log)
+    add_assets(
+        "packs",
+        root,
+        None,
+        minecraft,
+        &Inputs::default(),
+        false,
+        log,
+    )
 }
 
 /// The built-in packs `packs` copies, under the prepared resources' `assets`.
@@ -375,11 +415,11 @@ fn copy_indexed(
         let relative = artifacts::safe_relative(name)
             .ok_or_else(|| format!("Unsafe asset name {name:?} in the asset index"))?;
         let source = object_path(&assets.store, hash)?;
-            if !source.is_file() {
-                if let Some(fetch) = &assets.fetch {
-                    fetch.object(hash, size, &source, log)?;
-                }
+        if !source.is_file() {
+            if let Some(fetch) = &assets.fetch {
+                fetch.object(hash, size, &source, log)?;
             }
+        }
         let destination = assets.target.join("assets").join(relative);
         let import = crate::files::Import::stage(
             &source,
@@ -636,8 +676,16 @@ mod tests {
             assets_dir: Some(store),
             ..Default::default()
         };
-        let target =
-            add_assets("languages", &f.root, None, Some(&empty), &inputs, false, &|_| {}).unwrap();
+        let target = add_assets(
+            "languages",
+            &f.root,
+            None,
+            Some(&empty),
+            &inputs,
+            false,
+            &|_| {},
+        )
+        .unwrap();
         assert!(fs::read(target.join("assets/pack.mcmeta"))
             .unwrap()
             .starts_with(b"{\"language\""));

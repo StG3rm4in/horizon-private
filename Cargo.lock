@@ -214,6 +214,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "175571dd1d178ced59193a6fc02dde1b972eb0bc56c892cde9beeceac5bf0f6b"
 
 [[package]]
+name = "ascii"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d92bec98840b8f03a5ff5413de5293bfcd8bf96467cf5452609f939ec6f5de16"
+
+[[package]]
 name = "ash"
 version = "0.38.0+1.3.281"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -617,6 +623,12 @@ dependencies = [
  "serde",
  "windows-link",
 ]
+
+[[package]]
+name = "chunked_transfer"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e4de3bc4ea267985becf712dc6d9eed8b04c953b3fcfb339ebc87acd9804901"
 
 [[package]]
 name = "cipher"
@@ -1886,7 +1898,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "toml",
- "ureq",
+ "ureq 2.12.1",
  "wat",
  "wgpu",
  "winit",
@@ -2002,7 +2014,7 @@ dependencies = [
  "smallvec",
  "tempfile",
  "unicode-bidi",
- "ureq",
+ "ureq 2.12.1",
  "wgpu",
  "windows-sys 0.61.2",
  "winit",
@@ -2066,7 +2078,7 @@ dependencies = [
  "symphonia",
  "tempfile",
  "unicode-bidi",
- "ureq",
+ "ureq 2.12.1",
  "wgpu",
  "winit",
  "zip",
@@ -2104,7 +2116,7 @@ dependencies = [
  "png",
  "serde",
  "serde_json",
- "ureq",
+ "ureq 2.12.1",
 ]
 
 [[package]]
@@ -2617,7 +2629,7 @@ dependencies = [
  "open",
  "serde",
  "serde_json",
- "ureq",
+ "ureq 2.12.1",
  "url",
 ]
 
@@ -2661,7 +2673,7 @@ dependencies = [
  "sha1",
  "sha2",
  "toml",
- "ureq",
+ "ureq 2.12.1",
  "url",
  "zip",
 ]
@@ -2683,6 +2695,8 @@ dependencies = [
  "regex",
  "sha1",
  "sha2",
+ "tiny_http",
+ "ureq 3.5.2",
  "zip",
 ]
 
@@ -2748,7 +2762,7 @@ dependencies = [
  "sha1",
  "sha2",
  "toml",
- "ureq",
+ "ureq 2.12.1",
  "windows-sys 0.61.2",
  "zip",
 ]
@@ -2765,7 +2779,7 @@ dependencies = [
  "horizon-world",
  "log",
  "serde",
- "ureq",
+ "ureq 2.12.1",
  "windows-sys 0.61.2",
 ]
 
@@ -2824,7 +2838,7 @@ dependencies = [
  "ruzstd",
  "serde",
  "serde_json",
- "ureq",
+ "ureq 2.12.1",
 ]
 
 [[package]]
@@ -2869,6 +2883,28 @@ dependencies = [
  "sha2",
  "xxhash-rust",
 ]
+
+[[package]]
+name = "http"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "918d3568bebf352712bc2ef3d46a8bcf1a75b373be6539de198e9105cbbf9ce0"
+dependencies = [
+ "bytes",
+ "itoa",
+]
+
+[[package]]
+name = "httparse"
+version = "1.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
+
+[[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "iana-time-zone"
@@ -5664,7 +5700,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.6",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5769,6 +5805,18 @@ dependencies = [
  "arrayref",
  "bytemuck",
  "strict-num",
+]
+
+[[package]]
+name = "tiny_http"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "389915df6413a2e74fb181895f933386023c71110878cd0825588928e64cdc82"
+dependencies = [
+ "ascii",
+ "chunked_transfer",
+ "httpdate",
+ "log",
 ]
 
 [[package]]
@@ -6007,6 +6055,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "ureq"
+version = "3.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ac5cecf619ca81f66a96482db09687c9f7465af65f4300a8c30cca05bd5a59d"
+dependencies = [
+ "base64 0.23.1",
+ "log",
+ "percent-encoding",
+ "rustls",
+ "rustls-pki-types",
+ "ureq-proto",
+ "utf8-zero",
+ "webpki-roots 1.0.10",
+]
+
+[[package]]
+name = "ureq-proto"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "622dce33c252115466d83f63e9744a18f12b4406aae51a01c15ad8fcf1185eb3"
+dependencies = [
+ "base64 0.23.1",
+ "http",
+ "httparse",
+ "log",
+]
+
+[[package]]
 name = "url"
 version = "2.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6017,6 +6093,12 @@ dependencies = [
  "percent-encoding",
  "serde",
 ]
+
+[[package]]
+name = "utf8-zero"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8c0a043c9540bae7c578c88f91dda8bd82e59ae27c21baca69c8b191aaf5a6e"
 
 [[package]]
 name = "utf8_iter"

@@ -1250,7 +1250,10 @@ pub fn import(
                 .get("size")
                 .and_then(Value::as_i64)
                 .and_then(|s| u64::try_from(s).ok()),
-            artifact.get("url").and_then(Value::as_str).map(str::to_owned),
+            artifact
+                .get("url")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
         ));
     }
     let hint = files.hint(&lock.version);
@@ -1277,16 +1280,14 @@ pub fn import(
     let server = if inputs.official_local.is_some() {
         None
     } else {
-        let pinned = downloads
-            .and_then(|d| d.get("server"))
-            .and_then(|server| {
-                let url = server.get("url").and_then(Value::as_str)?;
-                let size = server
-                    .get("size")
-                    .and_then(Value::as_i64)
-                    .and_then(|size| u64::try_from(size).ok())?;
-                Some((url, size))
-            });
+        let pinned = downloads.and_then(|d| d.get("server")).and_then(|server| {
+            let url = server.get("url").and_then(Value::as_str)?;
+            let size = server
+                .get("size")
+                .and_then(Value::as_i64)
+                .and_then(|size| u64::try_from(size).ok())?;
+            Some((url, size))
+        });
         import_server(lock, server_jar, pinned, fetch, files.prism.is_some(), log)?
     };
     let (server, server_libraries, server_from_client) = match server {
