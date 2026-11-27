@@ -111,6 +111,8 @@ pub struct Options {
     /// Files named one by one instead of found in `minecraft_dir` (`--version-json`,
     /// `--client-jar`, `--libraries-dir`, `--assets-dir`).
     pub inputs: artifacts::Inputs,
+        /// The Mojang downloads, when `--no-download` was not passed: None otherwise.
+        fetch: Option<fetch::Fetch>,
     /// Fetch the pinned files the player's copy lacks from Mojang (`--no-download` turns it off).
     pub download: bool,
     /// Where the resources go (`--output`); None for `root`'s `.local/horizon-client/<version>`.
@@ -748,6 +750,8 @@ fn prepare_impl(
                 log: &say,
                 stage: &stage,
                 inputs: options.inputs.clone(),
+                fetch,
+            };
             };
             if compile_only {
                 return run.bundle();
@@ -1266,7 +1270,14 @@ fn steps(
         run.stage();
         (run.log)("Copying the client's assets and data");
         let started = Instant::now();
-        let mut indexed = sounds::Assets::load(repo, Some(root), minecraft, &run.inputs, run.log);
+        let mut indexed = sounds::Assets::load(
+            repo,
+            Some(root),
+            minecraft,
+            &run.inputs,
+            run.fetch.clone(),
+            run.log,
+        );
         let (version, count) = extract_client_resources(&run.client, root, indexed.as_mut().ok())?;
         sounds::optional_imports(indexed.as_mut().map_err(|e| e.as_str()), run.log);
         (run.log)(&format!(
