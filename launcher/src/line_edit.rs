@@ -59,6 +59,7 @@ pub(super) struct LineEdit {
     max: usize,
     /// How many characters the box shows.
     visible: usize,
+    private: bool,
     undo: Vec<Snap>,
     redo: Vec<Snap>,
     run: Run,
@@ -85,6 +86,7 @@ impl LineEdit {
             scroll: 0,
             max,
             visible,
+            private: false,
             undo: Vec::new(),
             redo: Vec::new(),
             run: Run::None,
@@ -95,18 +97,26 @@ impl LineEdit {
         e
     }
 
+    pub(super) fn private(max: usize, visible: usize) -> Self {
+        let mut field = Self::new(String::new(), max, visible);
+        field.private = true;
+        field
+    }
+
     pub(super) fn text(&self) -> &str {
         &self.text
     }
 
     /// Replaces the text from outside (not an edit: no undo), the caret at its end.
     pub(super) fn set(&mut self, text: String) {
+        let private = self.private;
         *self = LineEdit::new(text, self.max, self.visible);
+        self.private = private;
     }
 
     /// The text, leaving the field empty.
     pub(super) fn take(&mut self) -> String {
-        let text = self.text.clone();
+        let text = std::mem::take(&mut self.text);
         self.set(String::new());
         text
     }
@@ -191,6 +201,10 @@ impl LineEdit {
     /// (typing a "t" over a selected "t") or continues a run. A run of typing is one step per
     /// word: `split` starts a new one.
     fn edit(&mut self, run: Run, split: bool, f: impl FnOnce(&mut Self)) {
+        if self.private {
+            f(self);
+            return;
+        }
         let prev = self.snap();
         let prev_run = self.run;
         f(self);
@@ -295,6 +309,7 @@ impl LineEdit {
     ) -> Key {
         let (lo, hi) = self.range();
         let out = match key {
+            "c" | "x" | "z" | "y" if command && self.private => Key::Moved,
             "enter" => Key::Enter,
             "escape" => Key::Escape,
             "left" if !shift && lo != hi && !command => {

@@ -136,6 +136,11 @@ impl Launcher {
         self.palette_close(window, cx);
         match run {
             Run::Play(id) => {
+                if self.ely_ui.selected || self.ely_ui.playing {
+                    self.go(Page::Play);
+                    self.play();
+                    return;
+                }
                 let Some(instance) = self.instances.list.iter().find(|i| i.id == id).cloned()
                 else {
                     return;

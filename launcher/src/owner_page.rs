@@ -248,6 +248,16 @@ impl Launcher {
         .p(px(32.))
         .child(body)
         .child(answers)
+        .child(
+            button("owner-ely", "Se connecter avec Ely.by", Kind::Secondary, &t).on_click(
+                cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.close_owner_screen();
+                    this.go(Page::Settings);
+                    this.open_ely_form(window, cx);
+                    cx.notify();
+                }),
+            ),
+        )
         .children(waiting);
         // The sky stays behind, dimmed: the sheet is over the launcher, not instead of it.
         div()
@@ -483,6 +493,16 @@ impl Launcher {
                 .mt(px(24.))
                 .children(main)
                 .child(later),
+        );
+        card = card.child(
+            button("owner-ely", "Se connecter avec Ely.by", Kind::Secondary, &t).on_click(
+                cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.close_owner_screen();
+                    this.go(Page::Settings);
+                    this.open_ely_form(window, cx);
+                    cx.notify();
+                }),
+            ),
         );
         if matches!(state, Shown::Code(..)) {
             card = card.child(

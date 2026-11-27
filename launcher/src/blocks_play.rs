@@ -3,6 +3,9 @@ use super::*;
 
 impl Launcher {
     pub(crate) fn play_page(&mut self, cx: &mut Context<Self>) -> Div {
+        if self.ely_ui.selected || self.ely_ui.playing {
+            return self.ely_play_panel(cx);
+        }
         let t = self.theme;
         // A Java instance plays Mojang's game: no Horizon version, nothing of Horizon's to prepare.
         let java = self.selected_instance().and_then(|i| i.java.clone());

@@ -26,6 +26,10 @@ const NOT_TOOLS: &[&str] = &[
     "account sign-in",
     "account list",
     "account session",
+    "ely-account sign-in",
+    "ely-account sign-out",
+    "ely-account status",
+    "ely-play",
 ];
 
 /// Commands that delete the player's things: their tools need `confirm: true`.

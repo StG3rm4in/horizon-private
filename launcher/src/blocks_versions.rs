@@ -7,6 +7,9 @@ impl Launcher {
     /// Plays the selected instance straight into a world (`--world`) or a server (`--server`):
     /// flags every Horizon release takes.
     pub(crate) fn quick_play(&mut self, flag: &'static str, value: String) {
+        if self.ely_ui.selected || self.ely_ui.playing {
+            return;
+        }
         self.quick_play = Some((flag, value));
         self.play();
         if self.starting_client.is_none() {
@@ -15,6 +18,9 @@ impl Launcher {
     }
 
     pub(crate) fn join_friend(&mut self) {
+        if self.ely_ui.selected || self.ely_ui.playing {
+            return;
+        }
         if horizon_friends::invite::parse(self.friend_code.text()).is_none() {
             return;
         }

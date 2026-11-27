@@ -3084,6 +3084,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-gpu"
+version = "0.1.0"
+dependencies = [
+ "horizon-core",
+ "log",
+]
+
+[[package]]
 name = "horizon-guest-stack"
 version = "0.1.0"
 dependencies = [
@@ -3466,6 +3474,7 @@ dependencies = [
  "flate2",
  "horizon-assets",
  "horizon-core",
+ "horizon-gpu",
  "horizon-threads",
  "indexmap",
  "libm",

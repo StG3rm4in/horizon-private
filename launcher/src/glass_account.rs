@@ -13,10 +13,20 @@ impl Launcher {
         let wide = self.window_width >= crate::glass_home::WIDE;
         // Signed out, "who plays" would only repeat the Microsoft card's call to sign in.
         if self.accounts.selected().is_none() {
-            return div().child(self.glass_microsoft_card(cx).w_full());
+            return div()
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .child(self.glass_microsoft_card(cx).w_full())
+                .child(self.ely_account_card(cx));
         }
         let left = self.glass_who_plays();
-        let right = self.glass_microsoft_card(cx);
+        let right = div()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .child(self.glass_microsoft_card(cx))
+            .child(self.ely_account_card(cx));
         if wide {
             div()
                 .flex()
@@ -36,6 +46,15 @@ impl Launcher {
 
     /// The player now.
     fn glass_who_plays(&self) -> Div {
+        if self.ely_ui.selected {
+            let (name, _) = self.who_plays();
+            return div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(ui::text(22., FontWeight::SEMIBOLD, ink::FULL).child(name))
+                .child(ui::text(14., FontWeight::NORMAL, 0.65).child("Ely.by · Noelcraft"));
+        }
         let t = self.theme;
         let (uuid, name, status) = match self.accounts.selected() {
             Some(a) => (
