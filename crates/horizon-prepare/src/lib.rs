@@ -13,7 +13,6 @@
 pub mod artifacts;
 mod check;
 pub mod exporters;
-#[cfg(feature = "download")]
 pub mod fetch;
 mod files;
 mod inventory;
