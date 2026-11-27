@@ -563,8 +563,9 @@ mod tests {
             .unwrap();
         assert_eq!(fs::read(f.destination()).unwrap(), f.data);
         assert!(!f.partial().exists());
+        // Le dernier octet gardé est redemandé : un arrêt brutal a pu le laisser à moitié écrit.
         let ranges = f.ranges.lock().unwrap().clone();
-        assert!(ranges.contains(&format!("bytes={kept}-")), "{ranges:?}");
+        assert!(ranges.contains(&format!("bytes={}-", kept - 1)), "{ranges:?}");
     }
 
     #[test]
