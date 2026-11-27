@@ -96,7 +96,7 @@ fn default_root() -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 fn main() -> ExitCode {
-let mut options = horizon_prepare::Options {
+    let mut options = horizon_prepare::Options {
         root: PathBuf::new(),
         ..Default::default()
     };
