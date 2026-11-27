@@ -17,10 +17,9 @@ import warnings
 
 AUTH = "https://authserver.ely.by/auth/authenticate"
 VERSION = "26.3"
-MISSING_GAME = (
-    "Fichiers de Minecraft 26.3 introuvables ou incomplets. "
-    "Lancez Minecraft 26.3 une fois dans Prism Launcher ou dans le lanceur officiel, "
-    "puis relancez ce script."
+PREPARATION_FAILED = (
+    "La préparation a échoué : fichiers de Minecraft 26.3 incomplets ou téléchargement coupé. "
+    "Relancez le script, les octets déjà reçus sont repris. Vérifiez aussi Java."
 )
 
 
@@ -122,15 +121,12 @@ def prism_has_game(instance):
 
 
 def game_source(args, appdata):
+    # Un dossier nommé explicitement sert toujours : le téléchargement complète ce qui y manque.
     if args.prism_instance is not None:
-        instance = args.prism_instance.resolve()
-        if prism_has_game(instance):
-            return "--prism-dir", instance
-    elif args.minecraft is not None:
-        minecraft = args.minecraft.resolve()
-        if official_has_game(minecraft):
-            return "--official-local", minecraft
-    elif appdata is not None:
+        return "--prism-dir", args.prism_instance.resolve()
+    if args.minecraft is not None:
+        return "--official-local", args.minecraft.resolve()
+    if appdata is not None:
         instances = appdata / "PrismLauncher" / "instances"
         if instances.is_dir():
             for instance in sorted(instances.iterdir()):
@@ -139,7 +135,8 @@ def game_source(args, appdata):
         minecraft = appdata / ".minecraft"
         if official_has_game(minecraft):
             return "--official-local", minecraft
-    raise ValueError(MISSING_GAME)
+    # Aucun dossier : le préparateur télécharge chaque fichier épinglé.
+    return None, None
 
 
 def java_version(home):
@@ -272,8 +269,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", type=Path, default=Path(__file__).resolve().parent)
     sources = parser.add_mutually_exclusive_group()
-    sources.add_argument("--prism-instance", type=Path)
-    sources.add_argument("--minecraft", type=Path)
+    sources.add_argument("--prism-instance", type=Path,
+                         help="instance Prism à compléter par téléchargement")
+    sources.add_argument("--minecraft", type=Path,
+                         help="dossier de jeu officiel à compléter par téléchargement")
     parser.add_argument("--java-home", type=Path)
     parser.add_argument("--server", required=True, type=server_address)
     args = parser.parse_args()
@@ -289,7 +288,9 @@ def main():
 
     appdata = Path(os.environ["APPDATA"]) if os.environ.get("APPDATA") else None
     source_flag, source = game_source(args, appdata)
-    roots = [prism_root(source) / "java"] if source_flag == "--prism-dir" else [source / "runtime"]
+    roots = []
+    if source is not None:
+        roots.append(prism_root(source) / "java" if source_flag == "--prism-dir" else source / "runtime")
     if appdata is not None:
         roots += [appdata / "PrismLauncher" / "java", appdata / ".minecraft" / "runtime"]
     if os.environ.get("LOCALAPPDATA"):
@@ -313,7 +314,8 @@ def main():
     subprocess.run(
         [
             prepare, "--root", bundle, "--output", resources, "--prepare", "--complete",
-            source_flag, source, *(["--java-home", java] if java is not None else []),
+            *([source_flag, str(source)] if source is not None else []),
+            *(["--java-home", java] if java is not None else []),
         ],
         cwd=bundle, env=env, stdin=subprocess.DEVNULL, check=True,
     )
@@ -337,7 +339,7 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except subprocess.CalledProcessError:
-        sys.exit("Échec de la préparation locale. " + MISSING_GAME + " Vérifiez aussi Java.")
+        sys.exit(PREPARATION_FAILED)
     except (getpass.GetPassWarning, EOFError):
         sys.exit("Utilisez un terminal interactif qui masque la saisie.")
     except KeyboardInterrupt:
