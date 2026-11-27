@@ -1,8 +1,7 @@
 //! Fetches the pinned Mojang files the player's own copy may lack: the version JSON, the client
 //! and server jars, the libraries and single asset objects. Every file is checked against the
 //! SHA-1 research-lock.json or the version JSON pins and published through `files::Import`, so a
-//! download is indistinguishable from an import once it lands. Off with `--no-download`, or
-//! without the `download` feature.
+//! download is indistinguishable from an import once it lands.
 //!
 //! An interrupted transfer keeps its bytes under `.local/downloads/<algorithm>-<checksum>.part`
 //! and the next call, in this run or a later one, asks the server for the rest with `Range`. The
