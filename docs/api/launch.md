@@ -19,8 +19,9 @@ The whole way, from picking a build to playing: [launch-guide.md](launch-guide.m
 
 1. Start Horizon only for a player signed in with a Microsoft account that owns Minecraft: Java Edition, and
    hand over that account's session (`--session-stdin`, or `--session-file`), never on the command line. This
-   is the same owner gate `horizon-launcher` applies before every start. Horizon never downloads Mojang's
-   files; a launcher that does downloads them only for that owner.
+   is the same owner gate `horizon-launcher` applies before every start. Preparing then completes the
+   player's files from Mojang's own hosts, so a launcher can offer it to an account that owns nothing yet;
+   `--no-download` keeps preparation to the files the player already has.
 2. Ask the build what it takes: `horizon-client --launch-api` prints JSON with `launch_api` (the version),
    `options` and `content` (which mods, shader packs and packs it loads). Pass only options it lists: any other is
    refused with exit code 2.
@@ -57,8 +58,9 @@ The account the game joins online-mode servers with ([microsoft-account.md](../m
 ## Preparing
 
 `horizon-prepare` turns the player's own Minecraft files into the resources `horizon-client --resources` reads. It
-downloads nothing: it reads the files of a Minecraft the player owns (Guide, step 1) and checks each against the
-pins in `research-lock.json`.
+reads the files of the player's Minecraft (Guide, step 1) and completes what is missing from Mojang's hosts, the
+client and server jars, the libraries, the asset index and single asset objects, checking every file against the
+pins in `research-lock.json`. An interrupted download resumes on the next run from the bytes it already kept.
 
 ```sh
 horizon-prepare --launch-api
@@ -81,13 +83,15 @@ horizon-prepare --check --output PREPARED
   prepares again. A folder being prepared, or whose preparation stopped, is not current.
   `--check` refuses `--progress` and `--complete` (exit 2): they apply to preparing.
 - `--complete`: after preparing, copies the sounds and fails unless `--check` would pass.
+- `--no-download`: fetch nothing from Mojang; only import and copy what the player's own copy has, and fail on
+  each gap with the file's name. Refused with `--check` (exit 2).
 - `--version-json`, `--client-jar`, `--libraries-dir` (Maven layout), `--assets-dir` (`indexes/` and `objects/`):
   for a launcher whose files aren't laid out like the official launcher's, each names what `--minecraft-dir`
   would give. Every file is still checked against the pins. When an earlier import beside the preparer is still
   verified, it is reused and these files aren't read.
-- `--server-jar PATH`: the first `--prepare` needs the server jar, which no launcher keeps. Horizon never
-  downloads it; a launcher downloads it (the version JSON's `downloads.server`) only for a signed-in account
-  that owns Java Edition, as `horizon-launcher` does.
+- `--server-jar PATH`: a server jar to use instead of the pinned one. Without it the pinned jar is downloaded
+  like everything else; with `--no-download`, a launcher has to fetch it (the version JSON's `downloads.server`)
+  and pass it.
 - `--java-home PATH`: a Java of the pinned version that the launcher manages, tried after `JAVA_HOME` and the
   `PATH`, before the official launcher's runtimes.
 - Exit codes: 0 done, 1 failed or gaps found, 2 a refused command line.
