@@ -288,6 +288,7 @@ let mut options = horizon_prepare::Options {
 fn complete_resources(
     options: &horizon_prepare::Options,
     resources: PathBuf,
+    download: bool,
     log: horizon_prepare::Log,
 ) -> Result<PathBuf, String> {
     horizon_prepare::add_assets(
@@ -296,7 +297,7 @@ fn complete_resources(
         Some(&resources),
         options.minecraft_dir.as_deref(),
         &options.inputs,
-        options.download,
+        download,
         log,
     )?;
     let lacking = horizon_prepare::check(&options.root, &resources)?;
