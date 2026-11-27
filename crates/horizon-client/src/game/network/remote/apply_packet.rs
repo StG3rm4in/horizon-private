@@ -1811,12 +1811,23 @@ impl Game<'_> {
                                 if let Some(t) = e.properties.iter().find(|p| p.name == "textures")
                                 {
                                     use horizon_client::skins;
-                                    let signature = skins::texture_signature(
-                                        &t.value, t.signature.as_deref(),
-                                    );
-                                    let textures =
-                                        skins::unpack(&t.value, signature, skins::texture_uris());
-                                    r.skin_textures.entry(e.uuid).or_insert(textures);
+                                    if self.skin_profiles.borrow().is_mixed() {
+                                        if !r.skin_textures.contains_key(&e.uuid)
+                                            && t.value.len() <= 32767
+                                            && let Some(signature) = t.signature.as_ref()
+                                            && signature.len() <= 1024 && signature != "Cg=="
+                                        {
+                                            r.pending_mixed_textures.entry(e.uuid)
+                                                .or_insert_with(|| (t.value.clone(), signature.clone()));
+                                        }
+                                    } else {
+                                        let signature = skins::texture_signature(
+                                            &t.value, t.signature.as_deref(),
+                                        );
+                                        let textures =
+                                            skins::unpack(&t.value, signature, skins::texture_uris());
+                                        r.skin_textures.entry(e.uuid).or_insert(textures);
+                                    }
                                 }
                             }
                         }
@@ -1881,6 +1892,7 @@ impl Game<'_> {
                         r.chat_sessions.remove(&u);
                         r.chat_validators.remove(&u);
                         r.skin_textures.remove(&u);
+                        r.pending_mixed_textures.remove(&u);
                         r.listed.remove(&u);
                         r.attachments.remove(&Holder::Player(u));
                     }

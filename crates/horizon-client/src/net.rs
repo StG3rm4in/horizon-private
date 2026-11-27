@@ -105,6 +105,7 @@ pub enum Event {
         registries: Arc<Dynamic>,
         uuid: u128,
         name: String,
+        mixed_providers: bool,
     },
     Packet(Box<play::Clientbound>),
     /// Registered application bytes, owned until the receiving root transaction ends.
@@ -181,6 +182,7 @@ impl Event {
                 registries,
                 uuid: _,
                 name,
+                mixed_providers: _,
             } => dynamic(registries).saturating_add(name.capacity()),
             Self::Reconfigured(registries) => dynamic(registries),
             Self::Packet(packet) => {
@@ -1010,6 +1012,7 @@ fn run(
     recorder: &RecorderSlot,
     payloads: &Arc<crate::raw_payloads::Transport>,
 ) -> Result<Reason, Reason> {
+    let direct = local.is_none() && !lan && !transferred && !address.starts_with(FRIEND);
     let (host, port, mut c) = if let Some(pipe) = local {
         (address.to_owned(), 0, Connection::local(pipe))
     } else {
@@ -1148,6 +1151,20 @@ fn run(
             login::Clientbound::Unknown(..) => {}
         }
     };
+    let mixed_providers = direct
+        && horizon_protocol::mixed::client_enabled_for(address)
+        && horizon_protocol::mixed::upstream(profile.uuid).is_some_and(|(provider, _)| {
+            profile.properties.iter().any(|p| {
+                p.name == horizon_protocol::mixed::PROPERTY
+                    && p.value == provider.label()
+                    && p.signature.is_none()
+            })
+        });
+    if mixed_providers {
+        use horizon_protocol::mixed::Provider;
+        horizon_client_render::skins::request_mixed_texture_keys(Provider::Mojang);
+        horizon_client_render::skins::request_mixed_texture_keys(Provider::Ely);
+    }
     status(send, &tr(lang, "connect.joining"));
     // ClientHandshakePacketListenerImpl.handleLoginFinished: the brand, then
     // the client information.
@@ -1183,6 +1200,7 @@ fn run(
             registries: Arc::new(registries),
             uuid: profile.uuid,
             name: profile.name,
+            mixed_providers,
         },
     )?;
     receive_play(

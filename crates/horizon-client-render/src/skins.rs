@@ -15,6 +15,9 @@ pub enum Signature {
     Unsigned,
     Signed,
     Invalid,
+    MixedMojang,
+    MixedEly,
+    MixedInvalid,
 }
 
 /// `MinecraftProfileTextures`: the texture URLs a profile names. Empty when
@@ -80,7 +83,315 @@ pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
 
 // Limit owned string allocations as well as table entries: obsolete, rejected profile
 // payloads must not accumulate a server's worth of maximum-size properties.
+use horizon_protocol::mixed::{self, Provider};
+
 const SKIN_MEMO_BYTES: usize = 4 * 1024 * 1024;
+
+fn mixed_get(url: &str, limit: u64) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let response = ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout(std::time::Duration::from_secs(4))
+        .build()
+        .get(url)
+        .call()
+        .ok()?;
+    if response.status() != 200 {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= limit).then_some(bytes)
+}
+
+type TextureKey = horizon_protocol::rsa::RsaPublicKey;
+
+struct MixedKeys {
+    keys: std::sync::Mutex<Option<Arc<Vec<TextureKey>>>>,
+    attempted: std::sync::Mutex<Option<std::time::Instant>>,
+}
+
+fn mixed_key_slot(provider: Provider) -> &'static MixedKeys {
+    use std::sync::Mutex;
+    static MOJANG: MixedKeys = MixedKeys {
+        keys: Mutex::new(None),
+        attempted: Mutex::new(None),
+    };
+    static ELY: MixedKeys = MixedKeys {
+        keys: Mutex::new(None),
+        attempted: Mutex::new(None),
+    };
+    match provider {
+        Provider::Mojang => &MOJANG,
+        Provider::Ely => &ELY,
+    }
+}
+
+fn mixed_texture_keys(provider: Provider) -> Option<Arc<Vec<TextureKey>>> {
+    mixed_key_slot(provider)
+        .keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// Schedule a key fetch. The caller only takes short snapshot locks.
+pub fn request_mixed_texture_keys(provider: Provider) {
+    let slot = mixed_key_slot(provider);
+    {
+        let mut attempted = slot.attempted.lock().unwrap_or_else(|e| e.into_inner());
+        if mixed_texture_keys(provider).is_some()
+            || attempted.is_some_and(|when| when.elapsed() < std::time::Duration::from_secs(10))
+        {
+            return;
+        }
+        *attempted = Some(std::time::Instant::now());
+    }
+    let _ = std::thread::Builder::new()
+        .name("Mixed texture keys".into())
+        .spawn(move || {
+            if let Some(keys) = load_mixed_texture_keys(provider) {
+                *slot.keys.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(keys));
+            }
+        });
+}
+
+fn load_mixed_texture_keys(provider: Provider) -> Option<Vec<TextureKey>> {
+    match provider {
+        Provider::Mojang => {
+            let data = mixed_get(mixed::MOJANG_KEYS, 64 * 1024)?;
+            let doc: serde_json::Value = serde_json::from_slice(&data).ok()?;
+            let keys = doc.get("profilePropertyKeys")?.as_array()?;
+            if keys.is_empty() || keys.len() > 16 {
+                return None;
+            }
+            keys.iter()
+                .map(|key| {
+                    let der = base64_decode(key.get("publicKey")?.as_str()?)?;
+                    TextureKey::from_der(&der).ok()
+                })
+                .collect()
+        }
+        Provider::Ely => {
+            let der = mixed_get(mixed::ELY_TEXTURE_KEY, 8192)?;
+            Some(vec![TextureKey::from_der(&der).ok()?])
+        }
+    }
+}
+
+/// None while the provider key is pending. Only retain the property for retry in that case.
+pub fn mixed_player_textures(id: u128, value: &str, signature: &str) -> Option<Textures> {
+    let Some((provider, _)) = mixed::upstream(id) else {
+        return Some(Textures::default());
+    };
+    if value.len() > 32767 || signature.len() > 1024 || signature == "Cg==" {
+        return Some(Textures::default());
+    }
+    if mixed_texture_keys(provider).is_none() {
+        request_mixed_texture_keys(provider);
+        return None;
+    }
+    Some(unpack_known(
+        value,
+        mixed_texture_signature(id, value, Some(signature)),
+    ))
+}
+
+fn verify_mixed_texture(
+    id: u128,
+    value: &str,
+    signature: &[u8],
+    keys: impl FnOnce(Provider) -> bool,
+) -> Signature {
+    let Some((provider, raw)) = mixed::upstream(id) else {
+        return Signature::MixedInvalid;
+    };
+    if signature == [10] || !keys(provider) {
+        return Signature::MixedInvalid;
+    }
+    let profile_id = base64_decode(value)
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|doc| mixed::parse_uuid(doc.get("profileId")?.as_str()?));
+    if profile_id != Some(raw) {
+        return Signature::MixedInvalid;
+    }
+    match provider {
+        Provider::Mojang => Signature::MixedMojang,
+        Provider::Ely => Signature::MixedEly,
+    }
+}
+
+pub fn mixed_texture_signature(id: u128, value: &str, signature: Option<&str>) -> Signature {
+    let Some(signature) = signature.filter(|s| s.len() <= 1024 && *s != "Cg==") else {
+        return Signature::MixedInvalid;
+    };
+    if value.len() > 32767 {
+        return Signature::MixedInvalid;
+    }
+    let Some((provider, _)) = mixed::upstream(id) else {
+        return Signature::MixedInvalid;
+    };
+    let Some(keys) = mixed_texture_keys(provider) else {
+        request_mixed_texture_keys(provider);
+        return Signature::MixedInvalid;
+    };
+    thread_local! {
+        static VERIFIED_MIXED: std::cell::RefCell<SkinMemo<(u128, String, String), Signature>> =
+            std::cell::RefCell::default();
+    }
+    let slot = (id, value.to_owned(), signature.to_owned());
+    if let Some(state) = VERIFIED_MIXED.with_borrow(|memo| memo.get(&slot).copied()) {
+        return state;
+    }
+    let state = base64_decode(signature).map_or(Signature::MixedInvalid, |decoded| {
+        verify_mixed_texture(id, value, &decoded, |_| {
+            keys.iter().any(|key| {
+                key.verify(
+                    horizon_protocol::rsa::SignatureHash::Sha1,
+                    value.as_bytes(),
+                    &decoded,
+                )
+            })
+        })
+    });
+    let bytes = slot.1.capacity() + slot.2.capacity();
+    VERIFIED_MIXED.with_borrow_mut(|memo| memo.remember(slot, state, bytes));
+    state
+}
+
+// Only produced by mixed_texture_url after a mixed signature and path check.
+const MIXED_DOWNLOAD: &str = "horizon-mixed:";
+const MOJANG_PATH: &str = "textures.minecraft.net/texture/";
+const ELY_PATHS: [&str; 5] = [
+    "skinsystem.ely.by/textures/",
+    "skinsystem.ely.by/skins/",
+    "skinsystem.ely.by/cloaks/",
+    "ely.by/storage/skins/",
+    "ely.by/storage/cloaks/",
+];
+
+fn mixed_texture_url(provider: Provider, url: &str) -> Option<String> {
+    let (scheme, path) = url.split_once("://")?;
+    if !matches!(scheme, "http" | "https") {
+        return None;
+    }
+    let texture = path.strip_prefix(MOJANG_PATH).or_else(|| {
+        (provider == Provider::Ely)
+            .then(|| ELY_PATHS.iter().find_map(|&base| path.strip_prefix(base)))
+            .flatten()
+    })?;
+    let stem = texture.strip_suffix(".png").unwrap_or(texture);
+    if stem.is_empty()
+        || stem.len() > 128
+        || !stem
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+    {
+        return None;
+    }
+    Some(format!("{MIXED_DOWNLOAD}https://{path}"))
+}
+
+fn resolve_mixed_profile(key: &NameOrId) -> Option<ResolvedProfile> {
+    let (provider, raw, requested_name) = match key {
+        NameOrId::Id(id) => {
+            let (provider, raw) = mixed::upstream(*id)?;
+            if provider != Provider::Ely {
+                return None;
+            }
+            (provider, raw, None)
+        }
+        NameOrId::Name(target) => {
+            let (provider, name) = mixed::target(target)?;
+            let url = format!("{}{}", provider.name_url(), name.to_ascii_lowercase());
+            let doc: serde_json::Value = serde_json::from_slice(&mixed_get(&url, 131072)?).ok()?;
+            if !doc.get("name")?.as_str()?.eq_ignore_ascii_case(name) {
+                return None;
+            }
+            (
+                provider,
+                mixed::parse_uuid(doc.get("id")?.as_str()?)?,
+                Some(name),
+            )
+        }
+    };
+    let id = provider.effective(raw)?;
+    let url = format!("{}{:032x}?unsigned=false", provider.profile_url(), raw);
+    let doc: serde_json::Value = serde_json::from_slice(&mixed_get(&url, 131072)?).ok()?;
+    let name = doc.get("name")?.as_str()?;
+    if !mixed::valid_name(name)
+        || requested_name.is_some_and(|wanted| !name.eq_ignore_ascii_case(wanted))
+        || mixed::parse_uuid(doc.get("id")?.as_str()?)? != raw
+    {
+        return None;
+    }
+    let mut properties = Vec::new();
+    if let Some(texture) = doc
+        .get("properties")
+        .and_then(|items| items.as_array())
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item["name"].as_str() == Some("textures"))
+        })
+        && let (Some(value), Some(signature)) =
+            (texture["value"].as_str(), texture["signature"].as_str())
+        && value.len() <= 32767
+        && signature.len() <= 1024
+        && signature != "Cg=="
+    {
+        properties.push((
+            "textures".into(),
+            value.to_owned(),
+            Some(signature.to_owned()),
+        ));
+    }
+    Some(ResolvedProfile {
+        id,
+        name: name.to_owned(),
+        properties,
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn mixed_texture_key_is_chosen_by_the_players_provider() {
+    use base64::Engine;
+    use horizon_protocol::rsa::{RsaPrivateKey, SignatureHash};
+    let mojang = RsaPrivateKey::generate(1024).unwrap();
+    let ely = RsaPrivateKey::generate(1024).unwrap();
+    let raw = 0x12345678_1234_4234_8234_123456789abcu128;
+    let mapped = Provider::Ely.effective(raw).unwrap();
+    let value = base64::engine::general_purpose::STANDARD
+        .encode(format!(r#"{{"profileId":"{raw:032x}","textures":{{}}}}"#));
+    let ms_signature = mojang.sign(SignatureHash::Sha1, value.as_bytes()).unwrap();
+    let ely_signature = ely.sign(SignatureHash::Sha1, value.as_bytes()).unwrap();
+    let verify = |id, signature: &[u8]| {
+        verify_mixed_texture(id, &value, signature, |provider| {
+            let key = match provider {
+                Provider::Mojang => &mojang.public,
+                Provider::Ely => &ely.public,
+            };
+            key.verify(SignatureHash::Sha1, value.as_bytes(), signature)
+        })
+    };
+    assert_eq!(verify(raw, &ms_signature), Signature::MixedMojang);
+    assert_eq!(verify(mapped, &ely_signature), Signature::MixedEly);
+    assert_eq!(verify(raw, &ely_signature), Signature::MixedInvalid);
+    assert_eq!(verify(mapped, &ms_signature), Signature::MixedInvalid);
+    assert_eq!(verify(mapped ^ 1, &ely_signature), Signature::MixedInvalid);
+    assert_eq!(verify(mapped, &[10]), Signature::MixedInvalid);
+    assert!(mixed_texture_url(Provider::Mojang, "https://skinsystem.ely.by/skins/a.png").is_none());
+    assert_eq!(
+        mixed_texture_url(Provider::Ely, "http://ely.by/storage/skins/a.png").as_deref(),
+        Some("horizon-mixed:https://ely.by/storage/skins/a.png")
+    );
+    assert!(mixed_texture_url(Provider::Ely, "https://skinsystem.ely.by/skins/../a").is_none());
+}
 
 fn ely_texture_key() -> Option<&'static horizon_protocol::rsa::RsaPublicKey> {
     use horizon_protocol::rsa::RsaPublicKey;
@@ -269,6 +580,12 @@ pub fn unpack_known(value: &str, signature: Signature) -> Textures {
 /// base64 JSON payload.
 pub fn unpack(value: &str, signature: Signature, valid_uris: &[impl AsRef<str>]) -> Textures {
     let empty = Textures::default();
+    let provider = match signature {
+        Signature::MixedMojang => Some(Provider::Mojang),
+        Signature::MixedEly => Some(Provider::Ely),
+        Signature::MixedInvalid => return empty,
+        _ => None,
+    };
     if crate::auth::ely_mode() && signature == Signature::Invalid {
         return empty;
     }
@@ -285,7 +602,7 @@ pub fn unpack(value: &str, signature: Signature, valid_uris: &[impl AsRef<str>])
         return empty;
     }
     let mut out = Textures {
-        signed: signature == Signature::Signed,
+        signed: provider.is_some() || signature == Signature::Signed,
         ..empty.clone()
     };
     // Authlib's MinecraftServicesSessionService validates every URL in
@@ -294,12 +611,20 @@ pub fn unpack(value: &str, signature: Signature, valid_uris: &[impl AsRef<str>])
         let Some(url) = texture.get("url").and_then(|u| u.as_str()) else {
             return empty;
         };
-        let allowed = valid_uris
-            .iter()
-            .any(|u| url.starts_with(&u.as_ref().replace("{textureId}", "")));
-        if !allowed {
-            return empty;
-        }
+        let url = if let Some(provider) = provider {
+            let Some(url) = mixed_texture_url(provider, url) else {
+                return empty;
+            };
+            url
+        } else {
+            if !valid_uris
+                .iter()
+                .any(|u| url.starts_with(&u.as_ref().replace("{textureId}", "")))
+            {
+                return empty;
+            }
+            url.to_owned()
+        };
         if kind == "SKIN" {
             out.slim = texture
                 .get("metadata")
@@ -313,7 +638,7 @@ pub fn unpack(value: &str, signature: Signature, valid_uris: &[impl AsRef<str>])
             "ELYTRA" => &mut out.elytra,
             _ => continue,
         };
-        *slot = Some(url.to_owned());
+        *slot = Some(url);
     }
     out
 }
@@ -435,10 +760,23 @@ pub struct ResolvedProfile {
 impl ResolvedProfile {
     /// `SessionService.getPackedTextures`: the `textures` property.
     pub fn textures(&self) -> Option<(String, Signature)> {
+        self.textures_for(false)
+    }
+
+    pub fn textures_for(&self, mixed: bool) -> Option<(String, Signature)> {
         self.properties
             .iter()
             .find(|(n, _, _)| n == "textures")
-            .map(|(_, v, s)| (v.clone(), texture_signature(v, s.as_deref())))
+            .map(|(_, v, s)| {
+                (
+                    v.clone(),
+                    if mixed {
+                        mixed_texture_signature(self.id, v, s.as_deref())
+                    } else {
+                        texture_signature(v, s.as_deref())
+                    },
+                )
+            })
     }
 }
 
@@ -457,6 +795,7 @@ pub enum Resolve {
 /// at most 256 entries kept 10 minutes after their last use, fetched on
 /// background threads.
 pub struct Resolver {
+    mixed: bool,
     entries: std::collections::HashMap<NameOrId, Entry>,
     done: std::sync::mpsc::Receiver<(NameOrId, Option<ResolvedProfile>)>,
     send: std::sync::mpsc::Sender<(NameOrId, Option<ResolvedProfile>)>,
@@ -536,9 +875,21 @@ impl Default for Resolver {
     }
 }
 impl Resolver {
+    pub fn set_mixed(&mut self, mixed: bool) {
+        if self.mixed != mixed {
+            *self = Self::new();
+            self.mixed = mixed;
+        }
+    }
+
+    pub fn is_mixed(&self) -> bool {
+        self.mixed
+    }
+
     pub fn new() -> Self {
         let (send, done) = std::sync::mpsc::channel();
         Self {
+            mixed: false,
             entries: Default::default(),
             done,
             send,
@@ -629,7 +980,10 @@ impl Resolver {
         }
         // `fetchByName` refuses an invalid name without a fetch. Answer without
         // caching: distinct invalid names must not fill the cache between sweeps.
-        if matches!(key, NameOrId::Name(name) if !valid_player_name(name)) {
+        let routed = self.mixed;
+        if matches!(key, NameOrId::Name(name)
+            if if routed { mixed::target(name).is_none() } else { !valid_player_name(name) })
+        {
             return Resolve::Done(None);
         }
         // At the cap, leave the key uncached and answer `Pending`: the caller polls, and a later
@@ -661,9 +1015,13 @@ impl Resolver {
                     }
                 }
                 let _fetch = Fetch(active);
-                let resolved = crate::auth::discovery()
-                    .ok()
-                    .and_then(|doc| resolve_profile(&key, &doc));
+                let resolved = if routed {
+                    resolve_mixed_profile(&key)
+                } else {
+                    crate::auth::discovery()
+                        .ok()
+                        .and_then(|doc| resolve_profile(&key, &doc))
+                };
                 let _ = send.send((key, resolved));
             });
         if spawned.is_err() {
@@ -714,17 +1072,27 @@ fn profile_id(v: &serde_json::Value) -> Option<u128> {
 /// `createUnresolved` (the `PLAYER_NAME` codec's alternative), a compound
 /// `name` + `id` + `properties` (`Partial.MAP_CODEC` or a `GameProfile`).
 pub fn parse_profile(v: &serde_json::Value) -> ProfileInfo {
+    parse_profile_mode(v, false)
+}
+
+fn parse_profile_mode(v: &serde_json::Value, mixed: bool) -> ProfileInfo {
     if let serde_json::Value::String(name) = v {
         return ProfileInfo {
             id: horizon_protocol::crypto::offline_uuid(name),
             textures: None,
-            dynamic: valid_player_name(name).then(|| NameOrId::Name(name.clone())),
+            dynamic: (if mixed {
+                crate::skins::mixed::target(name).is_some()
+            } else {
+                valid_player_name(name)
+            })
+            .then(|| NameOrId::Name(name.clone())),
         };
     }
     let name = v.get("name").and_then(|n| n.as_str()).map(str::to_owned);
     let id = v.get("id").and_then(profile_id);
     let properties = v.get("properties").and_then(|p| p.as_array());
     let textures = properties
+        .filter(|_| !mixed)
         .into_iter()
         .flatten()
         .find(|p| p.get("name").and_then(|n| n.as_str()) == Some("textures"))
@@ -766,9 +1134,18 @@ pub fn parse_profile(v: &serde_json::Value) -> ProfileInfo {
 /// a bare name string is `createUnresolved`, and a compound without
 /// properties and with exactly one of a name or an id is `Dynamic`.
 pub fn dynamic_nbt(profile: &horizon_core::nbt::Tag) -> Option<NameOrId> {
+    dynamic_nbt_for(profile, false)
+}
+
+pub fn dynamic_nbt_for(profile: &horizon_core::nbt::Tag, mixed_mode: bool) -> Option<NameOrId> {
     if let horizon_core::nbt::Tag::String(s) = profile {
         let name = s.to_string_lossy();
-        return valid_player_name(&name).then_some(NameOrId::Name(name));
+        let allowed = if mixed_mode {
+            mixed::target(&name).is_some()
+        } else {
+            valid_player_name(&name)
+        };
+        return allowed.then_some(NameOrId::Name(name));
     }
     if matches!(profile.get("properties"), Some(horizon_core::nbt::Tag::List(l)) if !l.is_empty()) {
         return None;
@@ -801,20 +1178,39 @@ fn prepare_head(profile: &serde_json::Value) -> HeadProfile {
 #[derive(Default)]
 struct HeadProfiles {
     entries: std::collections::HashMap<serde_json::Value, std::sync::Arc<HeadProfile>>,
+    mixed_entries: std::collections::HashMap<serde_json::Value, std::sync::Arc<HeadProfile>>,
+    mixed_resolved: std::collections::HashMap<(u128, String), std::sync::Arc<HeadProfile>>,
     nbt: std::collections::HashMap<horizon_core::nbt::Tag, std::sync::Arc<serde_json::Value>>,
     resolved: [std::collections::HashMap<String, std::sync::Arc<HeadProfile>>; 2],
 }
 
 impl HeadProfiles {
-    fn get(&mut self, profile: &serde_json::Value) -> std::sync::Arc<HeadProfile> {
-        if let Some(parsed) = self.entries.get(profile) {
+    #[cfg(test)]
+    fn get(&mut self, profile: &serde_json::Value) -> Arc<HeadProfile> {
+        self.get_mode(profile, false)
+    }
+
+    fn get_mode(&mut self, profile: &serde_json::Value, mixed: bool) -> Arc<HeadProfile> {
+        let entries = if mixed {
+            &mut self.mixed_entries
+        } else {
+            &mut self.entries
+        };
+        if let Some(parsed) = entries.get(profile) {
             return parsed.clone();
         }
-        if self.entries.len() >= MAX_HEAD_PROFILES {
-            self.entries.clear();
+        if entries.len() >= MAX_HEAD_PROFILES {
+            entries.clear();
         }
-        let parsed = std::sync::Arc::new(prepare_head(profile));
-        self.entries.insert(profile.clone(), parsed.clone());
+        let parsed = Arc::new(if mixed {
+            HeadProfile {
+                info: parse_profile_mode(profile, true),
+                skin: None,
+            }
+        } else {
+            prepare_head(profile)
+        });
+        entries.insert(profile.clone(), parsed.clone());
         parsed
     }
 }
@@ -851,7 +1247,8 @@ pub fn head_skin(
     {
         return sprite;
     }
-    let p = resolver.heads.get(profile);
+    let mixed = resolver.is_mixed();
+    let p = resolver.heads.get_mode(profile, mixed);
     // Dynamic resolution is deliberately not cached: pending answers and the
     // resolver's expiring service results must still advance on every draw.
     let resolved = p.info.dynamic.as_ref().and_then(|key| {
@@ -860,6 +1257,29 @@ pub fn head_skin(
         }
         match resolver.state_for_game(key) {
             Resolve::Done(Some(profile)) => {
+                if mixed {
+                    let (value, signature) = profile.textures_for(true)?;
+                    let url = unpack_known(&value, signature).skin?;
+                    let location = skin_location(&texture_hash(&url)?);
+                    let cache = &mut resolver.heads.mixed_resolved;
+                    let key = (profile.id, url.clone());
+                    if let Some(parsed) = cache.get(&key) {
+                        return Some(parsed.clone());
+                    }
+                    if cache.len() >= MAX_HEAD_PROFILES {
+                        cache.clear();
+                    }
+                    let parsed = Arc::new(HeadProfile {
+                        info: ProfileInfo {
+                            id: profile.id,
+                            textures: Some((value, signature)),
+                            dynamic: None,
+                        },
+                        skin: Some((url, location)),
+                    });
+                    cache.insert(key, parsed.clone());
+                    return Some(parsed);
+                }
                 let (_, value, signature) = profile
                     .properties
                     .iter()
@@ -969,7 +1389,46 @@ fn resample_64(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// `MinecraftProfileTexture.getHash`: the base name of the URL's path.
+#[cfg(test)]
+#[test]
+fn reviewed_mixed_texture_downloads_have_separate_cache_keys() {
+    let legacy = "http://textures.minecraft.net/texture/example";
+    let mixed = mixed_texture_url(Provider::Mojang, legacy).unwrap();
+    assert_eq!(texture_hash(legacy).as_deref(), Some("example"));
+    assert_eq!(
+        mixed.strip_prefix(MIXED_DOWNLOAD),
+        Some("https://textures.minecraft.net/texture/example")
+    );
+    assert_ne!(texture_hash(&mixed), texture_hash(legacy));
+}
+
+#[cfg(test)]
+#[test]
+fn reviewed_mixed_head_cache_drops_embedded_textures_only_in_mixed_mode() {
+    use base64::Engine;
+
+    let payload = serde_json::json!({
+        "textures": {"SKIN": {"url": "https://textures.minecraft.net/texture/example"}}
+    });
+    let value = base64::engine::general_purpose::STANDARD.encode(payload.to_string());
+    let json = serde_json::json!({
+        "name": "Alex",
+        "properties": [{"name": "textures", "value": value}]
+    });
+    let mut heads = HeadProfiles::default();
+    let legacy = heads.get_mode(&json, false);
+    let mixed = heads.get_mode(&json, true);
+    assert_eq!(legacy.info.textures, Some((value, Signature::Unsigned)));
+    assert!(mixed.info.textures.is_none());
+    assert!(mixed.skin.is_none());
+    assert!(Arc::ptr_eq(&mixed, &heads.get_mode(&json, true)));
+    assert!(Arc::ptr_eq(&legacy, &heads.get_mode(&json, false)));
+}
+
 pub fn texture_hash(url: &str) -> Option<String> {
+    if let Some(path) = url.strip_prefix(MIXED_DOWNLOAD) {
+        return Some(format!("mixed:{path}"));
+    }
     let rest = url.split_once("://")?.1;
     let path = &rest[rest.find('/').unwrap_or(rest.len())..];
     let path = &path[..path.find(['?', '#']).unwrap_or(path.len())];
@@ -1639,6 +2098,9 @@ impl SkinSlots {
 /// A GET over HTTP or HTTPS (textures.minecraft.net serves both; vanilla
 /// uses https): the body of a 2xx answer, 16 MiB at most, after redirects.
 fn http_get(url: &str) -> Option<Vec<u8>> {
+    if let Some(normalized) = url.strip_prefix(MIXED_DOWNLOAD) {
+        return mixed_get(normalized, 16 << 20);
+    }
     use std::io::Read;
     let builder = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(15))

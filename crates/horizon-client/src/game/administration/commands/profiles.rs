@@ -72,14 +72,12 @@ impl Game<'_> {
     /// `NameAndId` of a player target.
     fn target_profile(&self, t: Target) -> Option<NameAndId> {
         match t {
-            Target::Player => Some(NameAndId {
-                id: self.lan_acting_uuid?,
-                name: self.acting_player_name().to_owned(),
-            }),
-            Target::Guest(conn) => self.command_guest(conn).map(|g| NameAndId {
-                id: g.uuid,
-                name: g.name.clone(),
-            }),
+            Target::Player => NameAndId::from_player(
+                self.lan_acting_uuid?, self.acting_player_name(),
+            ),
+            Target::Guest(conn) => self.command_guest(conn)
+                .filter(|g| !horizon_protocol::mixed::engine_enabled() || g.participates_online())
+                .and_then(|g| NameAndId::from_player(g.uuid, &g.name)),
             _ => None,
         }
     }
@@ -124,7 +122,15 @@ impl Game<'_> {
     /// `BanPlayerCommands.banPlayers` and `PardonCommand.pardonPlayers`.
     pub(super) fn cmd_profiles(&mut self, id: &str, ctx: &Context) -> R<i32> {
         let lists = self.dedicated_lists()?;
-        let players = self.game_profiles(ctx, "targets")?;
+        let players = if horizon_protocol::mixed::engine_enabled()
+            && matches!(id, "deop" | "pardon")
+            && let Some(Arg::Str(target)) = ctx.get("targets")
+        {
+            vec![self.removal_profile(&lists, id, target)
+                .ok_or_else(|| err("argument.player.unknown", &[]))?]
+        } else {
+            self.game_profiles(ctx, "targets")?
+        };
         let lit = |s: &str| Text::literal(s.to_owned());
         let mut count = 0;
         match id {

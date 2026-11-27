@@ -55,6 +55,9 @@ pub const API: &str = horizon_addresses::COSMETICS_API;
 pub fn enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
+        if std::env::var_os("HORIZON_MIXED_CLIENT").is_some_and(|value| !value.is_empty()) {
+            return false;
+        }
         // Never with an Ely.by session: its sign-in joins a server id that the service chooses.
         if std::env::var("HORIZON_API_DISCOVERY").ok().as_deref() == Some("ely.by") {
             return false;

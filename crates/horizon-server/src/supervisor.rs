@@ -221,16 +221,61 @@ struct Watch {
     keep: u32,
 }
 
+fn identity_mode_allows_start(dir: &Path, mixed: bool) -> Result<bool, String> {
+    use horizon_platform::server_files::user_lists;
+    let refusal = if mixed {
+        user_lists::mixed_start_refusal(dir)?
+    } else {
+        user_lists::legacy_mixed_evidence(dir)?
+    };
+    if let Some(why) = refusal {
+        eprintln!("[Supervisor/ERROR] Refusing server start: {why}");
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+fn identity_mode_allows_restart(shared: &Shared, dir: &Path, mixed: bool) -> bool {
+    match identity_mode_allows_start(dir, mixed) {
+        Ok(allowed) => allowed,
+        Err(why) => {
+            // The loop is entered only after a successful check, and stops on any refusal.
+            note(
+                shared,
+                "WARN",
+                &format!(
+                    "Could not recheck identity mode: {why}. Keeping the previous start verdict."
+                ),
+            );
+            true
+        }
+    }
+}
+
+fn check_identity_mode(dir: &Path, config: &Config) -> Result<bool, String> {
+    let mixed = config.proxy.mixed_providers;
+    if mixed && (!config.proxy.enabled || !config.server.online_mode || config.transfer.enabled) {
+        eprintln!(
+            "[Supervisor/ERROR] Refusing server start: mixed providers require proxy.enabled, server.online_mode and transfer.enabled=false"
+        );
+        return Ok(false);
+    }
+    identity_mode_allows_start(dir, mixed)
+}
+
 pub fn run(dir: &Path) -> Result<(), String> {
     signals::install();
     let config = Config::load(dir)?;
+    let _lock = lock(dir)?;
+    if !check_identity_mode(dir, &config)? {
+        return Ok(());
+    }
     let program = launch::program(&config, dir)?;
     let resources = launch::resources(&config, dir, Some(&program))?;
     // Half-copied game files would only crash the engine again at every restart: name what is missing.
     engine::check_prepared(&resources)?;
     // A game the system can't load would only crash again at every restart: say why at once.
     engine::check_starts(&program)?;
-    let _lock = lock(dir)?;
     let shared = Shared::new(dir);
     let _endpoint = api::start(shared.clone())?;
     if let Some(address) = crate::management::start(shared.clone())? {
@@ -266,6 +311,8 @@ pub fn run(dir: &Path) -> Result<(), String> {
     schedule_backups(shared.clone());
     check_updates(shared.clone());
     // `[proxy]` is decided here, once: its listener lives as long as the supervisor.
+    let mixed_providers = config.proxy.mixed_providers;
+    let mut previous_config = config.clone();
     let game_port = start_proxy(&shared, dir, &config)?;
     let force_stop = Arc::new(AtomicBool::new(false));
     let console = console_lines(force_stop.clone());
@@ -278,7 +325,37 @@ pub fn run(dir: &Path) -> Result<(), String> {
     loop {
         // Read again before every start: edits to server.toml apply on the next restart, and so does a
         // switch to another release.
-        let mut config = Config::load(dir)?;
+        let mut config = match Config::load(dir) {
+            Ok(config) => config,
+            Err(why) if mixed_providers => {
+                note(
+                    &shared,
+                    "WARN",
+                    &format!("Refusing invalid configuration during mixed restart: {why}"),
+                );
+                previous_config.clone()
+            }
+            Err(why) => return Err(why),
+        };
+        if config.proxy.mixed_providers != mixed_providers
+            || (mixed_providers
+                && (!config.proxy.enabled || !config.server.online_mode || config.transfer.enabled))
+        {
+            note(
+                &shared,
+                "WARN",
+                "Refusing changes to the running identity mode or its proxy prerequisites",
+            );
+        }
+        config.proxy.mixed_providers = mixed_providers;
+        if mixed_providers {
+            config.server.online_mode = true;
+            config.transfer.enabled = false;
+        }
+        previous_config = config.clone();
+        if !identity_mode_allows_restart(&shared, dir, mixed_providers) {
+            return Ok(());
+        }
         config.proxy.enabled = game_port.is_some();
         if let Some(port) = game_port {
             config.proxy.game_port = port;
@@ -287,6 +364,9 @@ pub fn run(dir: &Path) -> Result<(), String> {
         // whatever ended the last game, not left for some later restart.
         if let Some(w) = apply_queued(&shared, dir, &config) {
             watch = Some(w);
+        }
+        if !identity_mode_allows_restart(&shared, dir, mixed_providers) {
+            return Ok(());
         }
         if let Ok(found) = launch::program_in(&config, dir, shared.install.as_ref())
             && let Ok(found_resources) = launch::resources(&config, dir, Some(&found))
@@ -323,6 +403,7 @@ pub fn run(dir: &Path) -> Result<(), String> {
             config.engine.worker_threads,
             &config.entities,
             transfers.as_deref(),
+            mixed_providers,
         );
         let (mut child, _leases) = match spawned {
             Ok(spawned) => spawned,

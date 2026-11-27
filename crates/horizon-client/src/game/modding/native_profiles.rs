@@ -55,6 +55,14 @@ impl Game<'_> {
 
     /// An online player's profile by name (any case), else an unexpired user cache entry.
     pub(super) fn profile_by_name(&self, name: &str) -> Option<GameProfile> {
+        use horizon_protocol::mixed;
+        if mixed::engine_enabled() {
+            let (provider, bare) = mixed::target(name)?;
+            return self.online_profile(|g| {
+                same_name(&g.name, bare)
+                    && mixed::upstream(g.uuid).is_some_and(|(p, _)| p == provider)
+            });
+        }
         if let Some(profile) = self.online_profile(|g| same_name(&g.name, name)) {
             return Some(profile);
         }

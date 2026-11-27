@@ -158,12 +158,11 @@ impl Game<'_> {
         let Action::Banned { until } = action else {
             return;
         };
-        if let Some(lists) = &self.server_lists {
+        if let Some(lists) = &self.server_lists
+            && let Some(user) = NameAndId::from_player(uuid, name)
+        {
             lists.lock().unwrap().bans.add(BanEntry::new(
-                NameAndId {
-                    id: uuid,
-                    name: name.to_owned(),
-                },
+                user,
                 Some("Server".into()),
                 Some(until),
                 Some(BAN_REASON.into()),

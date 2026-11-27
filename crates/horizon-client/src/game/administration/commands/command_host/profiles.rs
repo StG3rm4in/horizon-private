@@ -76,6 +76,26 @@ impl ProfilesHost for ListsTarget<'_, '_> {
         // PlayerList.reloadWhiteList.
         let _ = self.lists.lock().unwrap().white.load();
     }
+    fn try_reload_whitelist(&mut self) -> R<()> {
+        if !horizon_protocol::mixed::engine_enabled() {
+            self.reload_whitelist();
+            return Ok(());
+        }
+        self.lists.lock().unwrap().white.load_mode(true).map_err(|why| {
+            log::warn!("Could not reload the whitelist: {why}");
+            self.error("command.failed", &[])
+        })
+    }
+    fn whitelist_removal_profiles(&mut self, ctx: &Context) -> R<Vec<NameAndId>> {
+        if horizon_protocol::mixed::engine_enabled()
+            && let Some(horizon_client::command::Arg::Str(target)) = ctx.get("targets")
+        {
+            return self.game.removal_profile(&self.lists, "whitelist.remove", target)
+                .map(|user| vec![user])
+                .ok_or_else(|| self.error("argument.player.unknown", &[]));
+        }
+        self.game_profiles(ctx, "targets")
+    }
     fn using_whitelist(&self) -> bool {
         self.lists.lock().unwrap().use_whitelist
     }

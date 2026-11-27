@@ -26,7 +26,7 @@ use horizon_client::{
 };
 use horizon_core::nbt::{JavaString, Tag};
 use horizon_perf_format::v1::{StopReason, Trigger};
-use horizon_protocol::text::translatable;
+use horizon_protocol::{mixed, text::translatable};
 use mod_api::PermissionLevel;
 use std::{
     io::Write,
@@ -485,6 +485,9 @@ pub(super) fn preflight(options: &mut Options) -> Result<bool> {
         }
     }
     let started = Instant::now();
+    horizon_server_files::user_lists::check_mixed_folder(
+        std::path::Path::new("."), mixed::engine_enabled(),
+    )?;
     let settings = PathBuf::from("server.properties");
     let props = ServerProperties::from_file(&settings, &mut SystemEntropy::default())?;
     for w in &props.warnings {
@@ -666,7 +669,8 @@ impl Lists {
                 .add(BanEntry::new(ip, Some("Server".into()), None, reason))
     }
 
-    fn load() -> Self {
+    fn load() -> Result<Self> {
+        let mixed = mixed::engine_enabled();
         let mut l = Self {
             ops: OpList::new("ops.json"),
             white: WhiteList::new("whitelist.json"),
@@ -681,7 +685,7 @@ impl Lists {
             whitelist_bypass: Vec::new(),
         };
         // Horizon only: players from a proxy's Bedrock bridge (Floodgate) are never on whitelist.json.
-        if let Ok(text) = std::fs::read_to_string("whitelist-bypass.txt") {
+        if !mixed && let Ok(text) = std::fs::read_to_string("whitelist-bypass.txt") {
             match parse_whitelist_bypass(&text) {
                 Ok(prefixes) => {
                     log(
@@ -727,17 +731,25 @@ impl Lists {
             }
         };
         let saved = |r: std::io::Result<()>| r.map_err(|e| e.to_string());
-        warn("load user banlist", l.bans.load());
+        if mixed {
+            l.bans.load_mode(true)?;
+            l.ops.load_mode(true)?;
+            l.white.load_mode(true)?;
+        } else {
+            warn("load user banlist", l.bans.load());
+        }
         warn("save user banlist", saved(l.bans.save()));
         warn("load ip banlist", l.ip_bans.load());
         warn("save ip banlist", saved(l.ip_bans.save()));
-        warn("load operators list", l.ops.load());
-        warn("load white-list", l.white.load());
+        if !mixed {
+            warn("load operators list", l.ops.load());
+            warn("load white-list", l.white.load());
+        }
         warn("save operators list", saved(l.ops.save()));
         if !l.white.file.exists() {
             warn("save white-list", saved(l.white.save()));
         }
-        l
+        Ok(l)
     }
     /// PlayerList.isWhiteListed.
     fn whitelisted(&self, user: &NameAndId) -> bool {
@@ -1197,6 +1209,15 @@ impl Game<'_> {
             .get()
             .and_then(|m| m.lock().unwrap().take())
             .ok_or("dedicated server not prepared")?;
+        let mixed = mixed::engine_enabled();
+        if mixed && (props.online_mode || props.server_ip != "127.0.0.1") {
+            return Err("Mixed providers require the private loopback forwarding engine".into());
+        }
+        self.skin_profiles.borrow_mut().set_mixed(mixed);
+        if mixed {
+            log("WARN", "Mixed providers share bare names in scoreboards, teams, and name-keyed mods. Audit scores, team memberships, and mod permissions before admitting same-named accounts.");
+        }
+
         // Main's WorldLoader: a new world's dimensions come from
         // server.properties before the server starts.
         let world_dir = std::env::current_dir()?.join(&universe).join(&level_name);
@@ -1236,10 +1257,14 @@ impl Game<'_> {
         // Services.create: the services' public keys, fetched in the
         // background (they check players' chat keys).
         let secure_chat = Arc::new(horizon_client::lan::SecureChat::new(
-            props.enforce_secure_profile && props.online_mode,
-            || {
-                let discovery = profiles::discovery_url();
-                profiles::fetch_profile_key_keys(&discovery).unwrap_or_else(|e| {
+            !mixed && props.enforce_secure_profile && props.online_mode,
+            move || {
+                let keys = if mixed {
+                    profiles::mixed_chat_keys()
+                } else {
+                    profiles::fetch_profile_key_keys(&profiles::discovery_url())
+                };
+                keys.unwrap_or_else(|e| {
                     ::log::error!("{e}");
                     Vec::new()
                 })
@@ -1297,7 +1322,7 @@ impl Game<'_> {
                 "To change this, set \"online-mode\" to \"true\" in the server.properties file.",
             );
         }
-        let mut lists = Lists::load();
+        let mut lists = Lists::load()?;
         lists.use_whitelist = props.white_list;
         lists.enforce_whitelist = props.enforce_whitelist;
         lists.op_level = props.op_permission_level;
@@ -1388,6 +1413,9 @@ impl Game<'_> {
             .filter(|b| png_size(b) == Some((64, 64)));
         // Behind a Velocity proxy: `forwarding.secret` in the server folder, like the proxy's own file.
         let forwarding_secret = forwarding_secret(online.is_some())?;
+        if mixed && forwarding_secret.is_none() {
+            return Err("Mixed providers require forwarding.secret".into());
+        }
         // `[transfer]` on: a player's only way in must be the proxy, or one who joins this server
         // directly finds the older copy of itself that a hand-over left here, and items double.
         let transfers = self
@@ -2036,6 +2064,34 @@ impl Game<'_> {
     /// GameProfileArgument for a name: the user cache, else the profile
     /// service, else (offline) the offline player. None, told to the console:
     /// no such player.
+    pub(in crate::game) fn removal_profile(
+        &self,
+        lists: &Mutex<Lists>,
+        kind: &str,
+        name: &str,
+    ) -> Option<NameAndId> {
+        let stored = {
+            let lists = lists.lock().unwrap();
+            match kind {
+                "deop" => lists.ops.stored_profile(name),
+                "pardon" => lists.bans.stored_profile(name),
+                _ => lists.white.stored_profile(name),
+            }
+        };
+        match stored {
+            Ok(Some(user)) => Some(user),
+            Ok(None) if mixed::parse_uuid(name).is_none() => self.resolve(name),
+            result => {
+                if let Err(why) = result {
+                    log("WARN", why);
+                }
+                let unknown = Text::translate("argument.player.unknown", &[]);
+                log("INFO", &format!("System chat: {}", unknown.plain()));
+                None
+            }
+        }
+    }
+
     fn resolve(&self, name: &str) -> Option<NameAndId> {
         let found = self.resolve_name(name);
         if found.is_none() {
@@ -2048,6 +2104,9 @@ impl Game<'_> {
     /// `Services.nameToIdCache().get(name)`: the user cache, else the profile
     /// service, else (offline) the offline player.
     pub(super) fn resolve_name(&self, name: &str) -> Option<NameAndId> {
+        if mixed::engine_enabled() {
+            return profiles::look_up_mixed_name(name).ok().flatten();
+        }
         USER_CACHE.lock().unwrap().as_mut().and_then(|cache| {
             cache.get_by_name(name, |lower| {
                 let found = profiles::find_by_name(&profiles::discovery_url(), lower);
@@ -2268,7 +2327,12 @@ impl Game<'_> {
                 ));
             }
             "op" | "deop" if !rest.is_empty() => {
-                let Some(user) = self.resolve(rest[0]) else {
+                let user = if mixed::engine_enabled() && command == "deop" {
+                    self.removal_profile(&state.lists, "deop", rest[0])
+                } else {
+                    self.resolve(rest[0])
+                };
+                let Some(user) = user else {
                     return;
                 };
                 let level = state.op_level;
@@ -2405,7 +2469,12 @@ impl Game<'_> {
                 }
             }
             "pardon" if !rest.is_empty() => {
-                let Some(user) = self.resolve(rest[0]) else {
+                let user = if mixed::engine_enabled() {
+                    self.removal_profile(&state.lists, "pardon", rest[0])
+                } else {
+                    self.resolve(rest[0])
+                };
+                let Some(user) = user else {
                     return;
                 };
                 let removed = state.lists.lock().unwrap().bans.remove(&user);
@@ -2606,13 +2675,23 @@ impl Game<'_> {
                 }
             }
             ["reload"] => {
-                let _ = state.lists.lock().unwrap().white.load();
+                let mixed = mixed::engine_enabled();
+                let loaded = state.lists.lock().unwrap().white.load_mode(mixed);
+                if mixed && let Err(why) = loaded {
+                    log("WARN", &format!("Could not reload the whitelist: {why}"));
+                    return;
+                }
                 self.console_reply(Text::translate("commands.whitelist.reloaded", &[]));
                 let lists = state.lists.clone();
                 self.kick_unlisted_players(&lists);
             }
             ["add", name] | ["remove", name] => {
-                let Some(user) = self.resolve(name) else {
+                let user = if mixed::engine_enabled() && rest[0] == "remove" {
+                    self.removal_profile(&state.lists, "whitelist.remove", name)
+                } else {
+                    self.resolve(name)
+                };
+                let Some(user) = user else {
                     return;
                 };
                 let mut l = state.lists.lock().unwrap();
@@ -2765,17 +2844,19 @@ impl Game<'_> {
             }
             return;
         };
-        let user = NameAndId {
-            id: uuid,
-            name: name.to_owned(),
+        let banned = if let Some(user) = NameAndId::from_player(uuid, name) {
+            lists.lock().unwrap().bans.add(BanEntry::new(
+                user,
+                Some("Horizon anticheat".into()),
+                None,
+                Some(reason.to_owned()),
+            ));
+            log("INFO", &format!("Banned {name}: {reason}"));
+            true
+        } else {
+            log("WARN", &format!("Can't record anticheat ban for {name} ({reason}); kicking by UUID"));
+            false
         };
-        lists.lock().unwrap().bans.add(BanEntry::new(
-            user,
-            Some("Horizon anticheat".into()),
-            None,
-            Some(reason.to_owned()),
-        ));
-        log("INFO", &format!("Banned {name}: {reason}"));
         let conns: Vec<u32> = hub
             .guests
             .iter()
@@ -2783,9 +2864,15 @@ impl Game<'_> {
             .map(|g| g.conn)
             .collect();
         for conn in conns {
-            hub.kick(conn, translatable("multiplayer.disconnect.banned", &[]));
+            if banned {
+                hub.kick(conn, translatable("multiplayer.disconnect.banned", &[]));
+            } else {
+                hub.anticheat_kick(conn);
+            }
         }
-        events::record("ban", name, uuid, serde_json::json!({ "reason": reason }));
+        if banned {
+            events::record("ban", name, uuid, serde_json::json!({ "reason": reason }));
+        }
     }
 
     pub(super) fn kick_uuid(&mut self, uuid: u128, reason: Tag) {

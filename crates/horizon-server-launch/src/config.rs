@@ -249,11 +249,18 @@ pub struct Config {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Proxy {
+    /// Authenticate production Mojang and Ely.by accounts on this proxy.
+    #[serde(skip_serializing_if = "is_false")]
+    pub mixed_providers: bool,
     pub enabled: bool,
     /// The port the game listens on, on 127.0.0.1; 0 takes a free one at every start of horizon-server.
     pub game_port: u16,
     /// How long a player is held through a restart before it is sent away if the game isn't back.
     pub hold_seconds: u32,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl Default for Proxy {
@@ -262,6 +269,7 @@ impl Default for Proxy {
             enabled: false,
             game_port: 0,
             hold_seconds: 60,
+            mixed_providers: false,
         }
     }
 }
@@ -1696,6 +1704,27 @@ keep = {keep}
         assert_eq!(on.server.port, 25565);
         assert!(render(&on).contains("[proxy]"));
         assert!(!render(&config).contains("[proxy]"));
+    }
+
+    #[test]
+    fn reviewed_mixed_config_render_keeps_legacy_and_mixed_round_trips() {
+        let template = Config::parse(TEMPLATE).unwrap();
+        assert_eq!(render(&template), TEMPLATE);
+        let mut imported = Config::import(&properties(&[("motd", "Imported")])).unwrap();
+        let text = render(&imported);
+        assert!(!text.contains("mixed_providers"));
+        assert_eq!(Config::parse(&text).unwrap(), imported);
+
+        imported.proxy.enabled = true;
+        let text = render(&imported);
+        assert!(text.contains("[proxy]"));
+        assert!(!text.contains("mixed_providers"));
+        assert_eq!(Config::parse(&text).unwrap(), imported);
+
+        imported.proxy.mixed_providers = true;
+        let text = render(&imported);
+        assert!(text.contains("mixed_providers = true"));
+        assert_eq!(Config::parse(&text).unwrap(), imported);
     }
 
     #[test]

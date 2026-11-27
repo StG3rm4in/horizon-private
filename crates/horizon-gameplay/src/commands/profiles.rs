@@ -34,6 +34,13 @@ pub trait ProfilesHost: CommandHost {
     fn reason_message(&self, reason: Option<&str>) -> Text;
     /// `PlayerList.reloadWhiteList`.
     fn reload_whitelist(&mut self);
+    fn try_reload_whitelist(&mut self) -> R<()> {
+        self.reload_whitelist();
+        Ok(())
+    }
+    fn whitelist_removal_profiles(&mut self, ctx: &Context) -> R<Vec<NameAndId>> {
+        self.game_profiles(ctx, "targets")
+    }
     /// Whether the whitelist is on.
     fn using_whitelist(&self) -> bool;
     /// `DedicatedServer.setUsingWhitelist`.
@@ -143,7 +150,7 @@ pub fn whitelist(host: &mut dyn ProfilesHost, id: &str, ctx: &Context) -> R<i32>
     let lit = |s: &str| Text::literal(s.to_owned());
     match id {
         "whitelist.reload" => {
-            host.reload_whitelist();
+            host.try_reload_whitelist()?;
             host.feedback(Text::translate("commands.whitelist.reloaded", &[]));
             host.kick_unlisted_players();
             Ok(1)
@@ -179,7 +186,11 @@ pub fn whitelist(host: &mut dyn ProfilesHost, id: &str, ctx: &Context) -> R<i32>
         }
         _ => {
             let add = id == "whitelist.add";
-            let targets = host.game_profiles(ctx, "targets")?;
+            let targets = if add {
+                host.game_profiles(ctx, "targets")?
+            } else {
+                host.whitelist_removal_profiles(ctx)?
+            };
             let mut count = 0;
             for target in &targets {
                 if host.whitelist_apply(add, target) {

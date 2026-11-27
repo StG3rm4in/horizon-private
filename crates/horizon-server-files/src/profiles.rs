@@ -6,7 +6,10 @@ use crate::{
     json::{self, Json},
     user_lists::NameAndId,
 };
-use horizon_protocol::rsa::RsaPublicKey;
+use horizon_protocol::{
+    mixed::{self, Provider},
+    rsa::RsaPublicKey,
+};
 use std::{fmt, time::Duration};
 
 /// Mojang's services discovery document.
@@ -117,6 +120,136 @@ pub fn look_up_by_name_patiently(
             answer => return answer,
         }
     }
+}
+
+fn provider_get(url: &str) -> Result<Option<String>, NoAnswer> {
+    use std::io::Read;
+    const LIMIT: u64 = 128 * 1024;
+    let response = match ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout(Duration::from_secs(4))
+        .build()
+        .get(url)
+        .call()
+    {
+        Ok(response) if response.status() == 204 => return Ok(None),
+        Err(ureq::Error::Status(404, _)) => return Ok(None),
+        Ok(response) if response.status() == 200 => response,
+        Ok(response) => return Err(NoAnswer::Status(response.status())),
+        Err(ureq::Error::Status(code, _)) => return Err(NoAnswer::Status(code)),
+        Err(ureq::Error::Transport(_)) => return Err(NoAnswer::Unreachable),
+    };
+    let mut body = String::new();
+    response
+        .into_reader()
+        .take(LIMIT + 1)
+        .read_to_string(&mut body)
+        .map_err(|_| NoAnswer::Unreachable)?;
+    if body.len() as u64 > LIMIT {
+        return Err(NoAnswer::Unreachable);
+    }
+    Ok(Some(body))
+}
+
+fn provider_answer(body: &str) -> Option<NameAndId> {
+    let doc = json::parse(body, false).ok()?;
+    let id = mixed::parse_uuid(&doc.get("id")?.as_string()?)?;
+    let name = doc.get("name")?.as_string()?;
+    mixed::valid_name(&name).then_some(NameAndId { id, name })
+}
+
+fn provider_name(provider: Provider, name: &str) -> Result<Option<NameAndId>, NoAnswer> {
+    if !mixed::valid_name(name) {
+        return Ok(None);
+    }
+    let url = format!("{}{}", provider.name_url(), name.to_ascii_lowercase());
+    provider_get(&url)?
+        .map(|body| {
+            provider_answer(&body)
+                .filter(|user| user.name.eq_ignore_ascii_case(name))
+                .ok_or(NoAnswer::Unreachable)
+        })
+        .transpose()
+}
+
+fn provider_id(provider: Provider, raw: u128) -> Option<NameAndId> {
+    let url = format!("{}{:032x}?unsigned=false", provider.profile_url(), raw);
+    provider_answer(&provider_get(&url).ok()??).filter(|u| u.id == raw)
+}
+
+fn resolve_mixed_with(
+    target: &str,
+    lookup: impl FnOnce(Provider, &str) -> Result<Option<NameAndId>, NoAnswer>,
+) -> Result<Option<NameAndId>, NoAnswer> {
+    let Some((provider, name)) = mixed::target(target) else {
+        return Ok(None);
+    };
+    lookup(provider, name)?
+        .map(|user| {
+            if !user.name.eq_ignore_ascii_case(name) {
+                return Err(NoAnswer::Unreachable);
+            }
+            let id = provider.effective(user.id).ok_or(NoAnswer::Unreachable)?;
+            Ok(NameAndId {
+                id,
+                name: provider.qualify(&user.name),
+            })
+        })
+        .transpose()
+}
+
+pub fn look_up_mixed_name(target: &str) -> Result<Option<NameAndId>, NoAnswer> {
+    resolve_mixed_with(target, provider_name)
+}
+
+pub fn find_mixed_id(id: u128) -> Option<NameAndId> {
+    let (provider, raw) = mixed::upstream(id)?;
+    let user = provider_id(provider, raw)?;
+    Some(NameAndId {
+        id,
+        name: provider.qualify(&user.name),
+    })
+}
+
+pub fn mixed_chat_keys() -> Result<Vec<RsaPublicKey>, &'static str> {
+    let answer = provider_get(mixed::MOJANG_KEYS)
+        .ok()
+        .flatten()
+        .ok_or("Failed to request Mojang public keys")?;
+    profile_key_keys(&answer)
+}
+
+#[cfg(test)]
+#[test]
+fn mixed_list_lookup_routes_names_without_fallback() {
+    let raw = 0x12345678_1234_4234_8234_123456789abcu128;
+    for provider in [Provider::Mojang, Provider::Ely] {
+        let target = provider.qualify("aLEX");
+        let user = resolve_mixed_with(&target, |asked, name| {
+            assert_eq!(asked, provider);
+            assert_eq!(name, "aLEX");
+            Ok(Some(NameAndId {
+                id: raw,
+                name: "Alex".into(),
+            }))
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(user.name, provider.qualify("Alex"));
+        assert_eq!(user.id, provider.effective(raw).unwrap());
+        assert!(user.valid_mixed_list_name());
+    }
+    assert_eq!(
+        resolve_mixed_with("Alex", |_, _| panic!("unqualified lookup")),
+        Ok(None)
+    );
+    assert_eq!(
+        resolve_mixed_with("ely:Alex", |p, _| {
+            assert_eq!(p, Provider::Ely);
+            Err(NoAnswer::Status(503))
+        }),
+        Err(NoAnswer::Status(503))
+    );
 }
 
 /// Finding a player by id on the session service, as the management protocol does for a player given by

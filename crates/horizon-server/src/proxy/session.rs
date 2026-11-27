@@ -105,6 +105,15 @@ struct State {
     ended: bool,
 }
 
+// Serialize backend logins for the same effective UUID, including reattach.
+fn mixed_login_lock(uuid: u128) -> std::sync::MutexGuard<'static, ()> {
+    const STRIPES: usize = 64;
+    static LOCKS: [Mutex<()>; STRIPES] = [const { Mutex::new(()) }; STRIPES];
+    LOCKS[(uuid as usize) % STRIPES]
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 /// Takes a client whose name is verified through the rest of its login and its whole play.
 pub(super) fn run(
     inner: &Arc<Inner>,
@@ -114,6 +123,30 @@ pub(super) fn run(
     intent: i32,
     deadline: Deadline,
 ) {
+    let closer = if who.provider.is_some() {
+        match client.reader.closer() {
+            Ok(closer) => Some(closer),
+            Err(e) => {
+                inner.note("DEBUG", &format!("Closing login for {}: {e}", who.name));
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    let admission = closer.as_ref().map(|_| mixed_login_lock(who.uuid));
+    if admission.is_some() {
+        let name = who.name.to_ascii_lowercase();
+        let owner = inner
+            .mixed_claims
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&name)
+            .map(|entry| entry.uuid);
+        if super::claim_conflict(owner, who.uuid) {
+            return refuse(&mut client, occupied_name());
+        }
+    }
     let identity = Identity {
         address: peer,
         uuid: who.uuid,
@@ -140,6 +173,30 @@ pub(super) fn run(
     } else {
         None
     };
+    let claim = if let Some(closer) = closer {
+        match super::NameClaim::acquire(
+            &inner.mixed_claims,
+            &who.name,
+            who.uuid,
+            closer,
+            game.is_some(),
+        ) {
+            Some(claim) => Some(claim),
+            None if game.is_some() => return refuse(&mut client, occupied_name()),
+            None => {
+                return refuse(
+                    &mut client,
+                    super::wire::translated_json(
+                        "multiplayer.disconnect.server_restarting",
+                        "The game is restarting. Please reconnect when it is ready.",
+                    ),
+                );
+            }
+        }
+    } else {
+        None
+    };
+    drop(admission);
     if finish_login(inner, &mut client, &who).is_err() {
         return;
     }
@@ -187,6 +244,10 @@ pub(super) fn run(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .push(session.clone());
+    if claim.as_ref().is_some_and(|claim| !claim.bind(&session)) {
+        session.end();
+        return;
+    }
     let attached = game.is_some_and(|(engine, game)| session.attach_game(game, engine, 0, false));
     session.lock().attaching = false;
     if attached {
@@ -241,6 +302,10 @@ fn finish_login(
         login::Serverbound::LoginAcknowledged(_) => Ok(()),
         _ => Err(super::wire::Error::new("unexpected packet during login")),
     }
+}
+
+fn occupied_name() -> String {
+    serde_json::json!({"text": "That name or account is already connected."}).to_string()
 }
 
 fn refuse(client: &mut Connection, reason_json: String) {
@@ -638,6 +703,7 @@ impl Session {
             .held_since
             .map_or_else(Instant::now, |since| since + self.inner.hold);
         let game = loop {
+            let admission = self.inner.mixed_providers.then(|| mixed_login_lock(*uuid));
             if self.inner.up_generation() != Some(engine) || !Self::same_hold(&self.lock(), hold) {
                 return Ok(());
             }
@@ -655,6 +721,7 @@ impl Session {
                     if Instant::now() + RETRY >= give_up {
                         return Err(other.to_string());
                     }
+                    drop(admission);
                     thread::sleep(RETRY);
                 }
             }

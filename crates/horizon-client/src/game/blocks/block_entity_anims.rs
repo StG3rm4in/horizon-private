@@ -960,18 +960,25 @@ impl Game<'_> {
         // The texture a packed or resolved `textures` property fetches: the
         // download of a static profile, or the one the services answer for a
         // `Dynamic` (name- or id-only) profile.
-        let download = skin.download.clone().or_else(|| {
-            let key = skin.dynamic.as_ref()?;
-            let skins::Resolve::Done(Some(profile)) =
-                self.skin_profiles.borrow_mut().state_for_game(key)
-            else {
+        let mut resolver = self.skin_profiles.borrow_mut();
+        let mixed = resolver.is_mixed();
+        let dynamic = if mixed {
+            skull.profile.as_ref().and_then(|p| skins::dynamic_nbt_for(p, true))
+        } else {
+            skin.dynamic.clone()
+        };
+        let embedded = if mixed { None } else { skin.download.clone() };
+        let download = embedded.or_else(|| {
+            let key = dynamic.as_ref()?;
+            let skins::Resolve::Done(Some(profile)) = resolver.state_for_game(key) else {
                 return None;
             };
-            let (value, signature) = profile.textures()?;
+            let (value, signature) = profile.textures_for(mixed)?;
             let url = skins::unpack(&value, signature, skins::texture_uris()).skin?;
             let location = skins::skin_location(&skins::texture_hash(&url)?);
             Some((url, location))
         });
+        drop(resolver);
         if let Some((url, location)) = download {
             let mut downloads = self.skin_downloads.borrow_mut();
             if self.gui.atlas.sprites.contains_key(&location) {

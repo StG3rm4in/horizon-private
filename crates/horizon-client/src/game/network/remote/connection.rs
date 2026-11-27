@@ -411,6 +411,7 @@ impl Game<'_> {
             players: HashMap::new(),
             tab_players: HashMap::new(),
             skin_textures: HashMap::new(),
+            pending_mixed_textures: HashMap::new(),
             own_profile: OwnProfile::Idle,
             skins: HashMap::new(),
             skins_revision: 0,
@@ -662,6 +663,7 @@ impl Game<'_> {
             players: HashMap::new(),
             tab_players: HashMap::new(),
             skin_textures: HashMap::new(),
+            pending_mixed_textures: HashMap::new(),
             own_profile: OwnProfile::Idle,
             skins: HashMap::new(),
             skins_revision: 0,
@@ -800,6 +802,7 @@ impl Game<'_> {
             r.session.disconnect();
         }
         super::super::lan::sync::forget_sync_data();
+        self.skin_profiles.borrow_mut().set_mixed(false);
         self.gui.atlas.clear_object_skins();
         if transferring {
             self.server_packs_disconnect_for(true);

@@ -25,6 +25,7 @@ pub mod quiet;
 pub mod registry;
 mod resolver;
 pub use resolver::server_redirect;
+pub mod mixed;
 pub mod rsa;
 pub mod secure_chat;
 pub mod server_status;

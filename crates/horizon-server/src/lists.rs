@@ -52,12 +52,15 @@ fn edit_locked(
     command: &str,
     args: &[&str],
 ) -> Result<Edit, String> {
+    let mixed = config.proxy.mixed_providers;
+    horizon_platform::server_files::user_lists::check_mixed_folder(dir, mixed)?;
+    let account = |name| account_mode(name, config.server.online_mode, mixed);
     let ops_path = dir.join("ops.json");
     let white_path = dir.join("whitelist.json");
     let (changed, message) = match (command, args) {
         ("op", [name]) => {
-            let mut ops = load(OpList::new(ops_path))?;
-            let user = account(name, config.server.online_mode)?;
+            let mut ops = load_mode(OpList::new(ops_path), mixed)?;
+            let user = account(name)?;
             if ops.contains(&user) {
                 (
                     false,
@@ -75,8 +78,16 @@ fn edit_locked(
             }
         }
         ("deop", [name]) => {
-            let mut ops = load(OpList::new(ops_path))?;
-            let user = listed(ops.entries().iter().map(|e| &e.user), name);
+            let mut ops = load_mode(OpList::new(ops_path), mixed)?;
+            let user = if mixed {
+                match ops.stored_profile(name)? {
+                    Some(user) => Some(user),
+                    None if horizon_platform::protocol::mixed::parse_uuid(name).is_some() => None,
+                    None => Some(account(name)?),
+                }
+            } else {
+                listed(ops.entries().iter().map(|e| &e.user), name)
+            };
             if user.is_some_and(|user| ops.remove(&user)) {
                 saved(&ops)?;
                 (true, format!("Made {name} no longer a server operator"))
@@ -88,8 +99,8 @@ fn edit_locked(
             }
         }
         ("whitelist", ["add", name]) => {
-            let mut white = load(WhiteList::new(white_path))?;
-            let user = account(name, config.server.online_mode)?;
+            let mut white = load_mode(WhiteList::new(white_path), mixed)?;
+            let user = account(name)?;
             if white.contains(&user) {
                 (false, "Player is already whitelisted".to_owned())
             } else {
@@ -99,8 +110,16 @@ fn edit_locked(
             }
         }
         ("whitelist", ["remove", name]) => {
-            let mut white = load(WhiteList::new(white_path))?;
-            let user = listed(white.entries().iter().map(|e| &e.user), name);
+            let mut white = load_mode(WhiteList::new(white_path), mixed)?;
+            let user = if mixed {
+                match white.stored_profile(name)? {
+                    Some(user) => Some(user),
+                    None if horizon_platform::protocol::mixed::parse_uuid(name).is_some() => None,
+                    None => Some(account(name)?),
+                }
+            } else {
+                listed(white.entries().iter().map(|e| &e.user), name)
+            };
             if user.is_some_and(|user| white.remove(&user)) {
                 saved(&white)?;
                 (true, format!("Removed {name} from the whitelist"))
@@ -120,7 +139,7 @@ fn edit_locked(
             }
         }
         ("whitelist", ["list"]) => {
-            let white = load(WhiteList::new(white_path))?;
+            let white = load_mode(WhiteList::new(white_path), mixed)?;
             let names: Vec<String> = white
                 .entries()
                 .iter()
@@ -144,9 +163,9 @@ fn edit_locked(
             }
         }
         ("ban", [name, rest @ ..]) => {
-            let user = account(name, config.server.online_mode)?;
+            let user = account(name)?;
             let reason = reason(rest);
-            let mut bans = load(BanList::new(dir.join("banned-players.json")))?;
+            let mut bans = load_mode(BanList::new(dir.join("banned-players.json")), mixed)?;
             if bans.add(BanEntry::new(
                 user,
                 Some("Server".into()),
@@ -169,8 +188,16 @@ fn edit_locked(
             }
         }
         ("pardon", [name]) => {
-            let mut bans = load(BanList::new(dir.join("banned-players.json")))?;
-            let user = listed(bans.entries().iter().map(|e| &e.user), name);
+            let mut bans = load_mode(BanList::new(dir.join("banned-players.json")), mixed)?;
+            let user = if mixed {
+                match bans.stored_profile(name)? {
+                    Some(user) => Some(user),
+                    None if horizon_platform::protocol::mixed::parse_uuid(name).is_some() => None,
+                    None => Some(account(name)?),
+                }
+            } else {
+                listed(bans.entries().iter().map(|e| &e.user), name)
+            };
             if user.as_ref().is_some_and(|user| bans.remove(user)) {
                 saved(&bans)?;
                 (true, format!("Unbanned {name}"))
@@ -255,6 +282,17 @@ fn add_offline(dir: &Path, name: &str) -> Result<(), String> {
 /// services know by that name. Asked like vanilla's bulk lookup, three times when the services don't answer
 /// (they rate-limit data-center addresses), since `init` and a stopped server's edits run only once.
 pub fn account(name: &str, online: bool) -> Result<NameAndId, String> {
+    account_mode(name, online, false)
+}
+
+pub fn account_mode(name: &str, online: bool, mixed: bool) -> Result<NameAndId, String> {
+    if mixed {
+        use horizon_platform::{protocol::mixed, server_files::profiles};
+        let (provider, _) = mixed::target(name).ok_or("Use mojang:Name or ely:Name")?;
+        return profiles::look_up_mixed_name(name)
+            .map_err(|e| format!("{} services {e}", provider.label()))?
+            .ok_or_else(|| format!("No account found for {name}"));
+    }
     use horizon_platform::server_files::profiles;
     if !online {
         return Ok(NameAndId::offline(name));
@@ -290,6 +328,17 @@ fn saved<E: horizon_platform::server_files::user_lists::Entry>(
 ) -> Result<(), String> {
     list.save()
         .map_err(|e| format!("{}: {e}", list.file.display()))
+}
+
+fn load_mode<E: horizon_platform::server_files::user_lists::Entry>(
+    mut list: horizon_platform::server_files::user_lists::UserList<E>,
+    mixed: bool,
+) -> Result<horizon_platform::server_files::user_lists::UserList<E>, String> {
+    if !mixed {
+        return load(list);
+    }
+    list.load_mode(true)?;
+    Ok(list)
 }
 
 fn load<E: horizon_platform::server_files::user_lists::Entry>(

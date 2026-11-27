@@ -27,10 +27,16 @@ impl Game<'_> {
                 || horizon_client::tab_list::default_skin(*uuid),
                 String::as_str,
             );
-            for key in [
-                format!("id:{uuid:032x}"),
-                format!("name:{}", p.name.to_ascii_lowercase()),
-            ] {
+            let lower = p.name.to_ascii_lowercase();
+            let name = if self.skin_profiles.borrow().is_mixed() {
+                horizon_protocol::mixed::upstream(*uuid)
+                    .map(|(provider, _)| provider.qualify(&lower))
+            } else {
+                Some(lower)
+            };
+            for key in std::iter::once(format!("id:{uuid:032x}"))
+                .chain(name.map(|name| format!("name:{name}")))
+            {
                 if object_skin_changed(&self.gui.atlas.object_skins, &key, skin) {
                     self.gui.atlas.set_object_skin(key, skin.to_owned());
                 }
@@ -188,6 +194,17 @@ impl Game<'_> {
         let Some(r) = self.remote.as_mut() else {
             return;
         };
+        let textures = &mut r.skin_textures;
+        r.pending_mixed_textures.retain(|&id, (value, signature)| {
+            if let Some(checked) = horizon_client_render::skins::mixed_player_textures(
+                id, value, signature,
+            ) {
+                textures.insert(id, checked);
+                false
+            } else {
+                true
+            }
+        });
         let local = local.unwrap_or(r.profile);
         let mut entries = skin_entries(
             &r.level_players,
@@ -338,6 +355,7 @@ impl Game<'_> {
         // ClientMannequin.updateSkin (PlayerSkinRenderCache.lookup): a
         // mannequin's DATA_PROFILE `textures` property resolves like a
         // player's, never required to be signed.
+        let mixed = self.skin_profiles.borrow().is_mixed();
         let mannequins: Vec<(usize, horizon_client::skins::Textures)> = self
             .mobs
             .iter()
@@ -347,9 +365,11 @@ impl Game<'_> {
                 let profile = m.profile.as_ref();
                 let t = profile.and_then(|p| p.properties.iter().find(|p| p.name == "textures"));
                 let textures = if let Some(t) = t {
-                    let signature = horizon_client::skins::texture_signature(
-                        &t.value, t.signature.as_deref(),
-                    );
+                    let signature = if mixed {
+                        horizon_client::skins::Signature::MixedInvalid
+                    } else {
+                        horizon_client::skins::texture_signature(&t.value, t.signature.as_deref())
+                    };
                     horizon_client::skins::unpack_known(&t.value, signature)
                 } else {
                     // `ResolvableProfile.resolveProfile`: no `textures` and
@@ -364,7 +384,7 @@ impl Game<'_> {
                     key.and_then(
                         |key| match self.skin_profiles.borrow_mut().state_for_game(&key) {
                             horizon_client::skins::Resolve::Done(Some(profile)) => {
-                                profile.textures().map(|(value, signature)| {
+                                profile.textures_for(mixed).map(|(value, signature)| {
                                     horizon_client::skins::unpack_known(&value, signature)
                                 })
                             }

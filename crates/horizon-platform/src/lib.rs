@@ -45,7 +45,7 @@ pub mod protocol {
     /// What a server that logs players in on behalf of another (`horizon-server`'s `[proxy]`) speaks: the
     /// codecs, packets, ids, connection framing, encryption and the account-service hash.
     pub use horizon_protocol::{
-        Error, PROTOCOL_VERSION, buf, connection, crypto, ids, packets, rsa,
+        Error, PROTOCOL_VERSION, buf, connection, crypto, ids, mixed, packets, rsa,
     };
 }
 

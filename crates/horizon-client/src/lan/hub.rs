@@ -1625,7 +1625,8 @@ impl Hub {
             limited_crafting: self.limited_crafting,
             spawn: self.spawn_info(i, 0, ctx.sea_level),
             // MinecraftServer.usesAuthentication, enforceSecureProfile.
-            online_mode: self.lan.shared.config.online.is_some(),
+            online_mode: self.lan.shared.config.online.is_some()
+                || horizon_protocol::mixed::engine_enabled(),
             enforces_secure_chat: self.enforces_secure_chat(),
         }));
         g.send(&C::ChangeDifficulty(play::ChangeDifficulty {

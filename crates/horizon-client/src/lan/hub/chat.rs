@@ -300,6 +300,14 @@ impl Hub {
         };
         let g = &self.guests[i];
         let (conn, uuid) = (g.conn, g.uuid);
+        if horizon_protocol::mixed::engine_enabled()
+            && !matches!(
+                horizon_protocol::mixed::upstream(uuid),
+                Some((horizon_protocol::mixed::Provider::Mojang, _))
+            )
+        {
+            return;
+        }
         let old = g.chain.session().map(|s| s.profile_key.expires_at);
         if g.chain.session().is_some_and(|s| s.profile_key == key) {
             return;

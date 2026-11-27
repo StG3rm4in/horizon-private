@@ -52,9 +52,37 @@ impl Action {
     }
 
     /// The console line for a request body, or what is wrong with it.
+    #[cfg(test)]
     pub fn line(self, body: &Value) -> Result<String, String> {
+        self.line_mode(body, false)
+    }
+
+    fn line_mode(self, body: &Value, mixed: bool) -> Result<String, String> {
+        use horizon_platform::protocol::mixed as identity;
         let name = || {
             let name = body["name"].as_str().unwrap_or_default();
+            if mixed
+                && matches!(
+                    self,
+                    Self::Ban
+                        | Self::Pardon
+                        | Self::Op
+                        | Self::Deop
+                        | Self::WhitelistAdd
+                        | Self::WhitelistRemove
+                )
+            {
+                let removal = matches!(self, Self::Pardon | Self::Deop | Self::WhitelistRemove);
+                if identity::target(name).is_some()
+                    || (removal
+                        && identity::parse_uuid(name)
+                            .and_then(identity::upstream)
+                            .is_some())
+                {
+                    return Ok(name);
+                }
+                return Err("use mojang:Name or ely:Name, or an effective UUID for removal".into());
+            }
             if (1..=16).contains(&name.chars().count())
                 && name.chars().all(|c| !c.is_whitespace() && !c.is_control())
             {
@@ -118,11 +146,18 @@ fn online(game: &mut engine::Control) -> Result<Value, Response> {
 /// `POST /api/v1/players/<action>` and `/api/v1/whitelist[/...]`.
 pub fn act(shared: &Shared, action: Action, body: &[u8]) -> Response {
     let body: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
-    let line = match action.line(&body) {
+    let mixed = shared
+        .proxy
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|p| p.mixed_providers());
+    let line = match action.line_mode(&body, mixed) {
         Ok(line) => line,
         Err(e) => return Response::error(400, &e),
     };
     if shared.phase() == Phase::Stopped
+        && (mixed || action != Action::Pardon)
         && let Some((command, args)) = stopped_command(action, &body)
     {
         return match crate::lists::edit_stopped(&shared.dir, command, &args) {
@@ -170,11 +205,26 @@ pub fn act(shared: &Shared, action: Action, body: &[u8]) -> Response {
     )
 }
 
+#[cfg(test)]
+#[test]
+fn reviewed_mixed_api_accepts_full_length_names_and_removal_ids() {
+    let player = json!({"name": "mojang:abcdefghijklmnop"});
+    assert!(Action::Op.line(&player).is_err());
+    assert_eq!(
+        Action::Op.line_mode(&player, true).unwrap(),
+        "op mojang:abcdefghijklmnop"
+    );
+    let id = json!({"name": "12345678-1234-7234-8234-123456789abc"});
+    assert!(Action::Pardon.line_mode(&id, true).is_ok());
+    assert!(Action::Op.line_mode(&id, true).is_err());
+}
+
 /// The actions that can edit files without a game process.
 fn stopped_command(action: Action, body: &Value) -> Option<(&'static str, Vec<&str>)> {
     match action {
         Action::Op => Some(("op", vec![body["name"].as_str()?])),
         Action::Deop => Some(("deop", vec![body["name"].as_str()?])),
+        Action::Pardon => Some(("pardon", vec![body["name"].as_str()?])),
         Action::WhitelistAdd => Some(("whitelist", vec!["add", body["name"].as_str()?])),
         Action::WhitelistRemove => Some(("whitelist", vec!["remove", body["name"].as_str()?])),
         Action::Whitelist => Some((

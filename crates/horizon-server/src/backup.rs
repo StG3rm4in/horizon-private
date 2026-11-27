@@ -3,6 +3,7 @@
 //! (`save-off`, `save-all`), and writes again once the zip is done (`save-on`), so players stay online.
 //! A restore puts the backup's world in place of the current one, which is moved aside, never deleted.
 
+use horizon_platform::server_files::user_lists;
 use horizon_server_launch::config::Config;
 use std::{
     fs::File,
@@ -14,13 +15,14 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 pub const DIR: &str = "backups";
 /// The settings and lists a backup holds beside the world.
-const FILES: [&str; 6] = [
+const FILES: [&str; 7] = [
     "server.toml",
     "server.properties",
     "ops.json",
     "whitelist.json",
     "banned-players.json",
     "banned-ips.json",
+    user_lists::MIXED_MARKER,
 ];
 /// Automatic backups are named `<time>-auto.zip`; only those are pruned.
 const AUTO: &str = "auto";
@@ -108,6 +110,10 @@ fn add_dir(zip: &mut ZipWriter<BufWriter<File>>, dir: &Path, prefix: &str) -> Re
 /// and renamed when complete, so a backup that looks finished is one. Existing finished or partial
 /// backups with this name are left intact. The output directory must resolve outside the world.
 pub fn create(dir: &Path, config: &Config, file_name: &str) -> Result<PathBuf, String> {
+    let mixed = config.proxy.mixed_providers;
+    if mixed {
+        user_lists::check_mixed_folder(dir, true)?;
+    }
     let backups = dir.join(DIR);
     std::fs::create_dir_all(&backups).map_err(|e| format!("{}: {e}", backups.display()))?;
     let world = dir.join(&config.world.name);
@@ -154,10 +160,30 @@ pub fn create(dir: &Path, config: &Config, file_name: &str) -> Result<PathBuf, S
         }
         let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
         for name in FILES {
-            if let Ok(bytes) = std::fs::read(dir.join(name)) {
-                zip.start_file(name, options).map_err(|e| e.to_string())?;
-                zip.write_all(&bytes).map_err(|e| e.to_string())?;
+            let bytes = match std::fs::read(dir.join(name)) {
+                Ok(bytes) => bytes,
+                Err(e)
+                    if mixed
+                        && (name == user_lists::MIXED_MARKER
+                            || (user_lists::MIXED_LISTS.contains(&name)
+                                && e.kind() != std::io::ErrorKind::NotFound)) =>
+                {
+                    return Err(format!("{name}: {e}"));
+                }
+                Err(_) => continue,
+            };
+            if mixed && name == user_lists::MIXED_MARKER {
+                if !std::str::from_utf8(&bytes)
+                    .is_ok_and(|s| s.trim() == user_lists::MIXED_MARKER_VALUE)
+                {
+                    return Err(format!("Invalid {name}"));
+                }
+            } else if mixed && user_lists::MIXED_LISTS.contains(&name) {
+                user_lists::check_mixed_backup_list(name, &bytes)
+                    .map_err(|e| format!("{name}: {e}"))?;
             }
+            zip.start_file(name, options).map_err(|e| e.to_string())?;
+            zip.write_all(&bytes).map_err(|e| e.to_string())?;
         }
         zip.finish()
             .map_err(|e| e.to_string())?
@@ -252,6 +278,59 @@ pub fn find(dir: &Path, name: &str) -> Result<String, String> {
         })
 }
 
+fn restore_requires_mixed(dir: &Path, config: &Config) -> Result<bool, String> {
+    if config.proxy.mixed_providers {
+        return Ok(true);
+    }
+    Ok(user_lists::legacy_mixed_evidence(dir)?.is_some())
+}
+
+fn check_restore_archive(
+    zip: &mut ZipArchive<File>,
+    name: &str,
+    mixed: bool,
+) -> Result<(), String> {
+    use std::io::Read;
+
+    let marker = match zip.by_name(user_lists::MIXED_MARKER) {
+        Ok(entry) if mixed && entry.is_file() => {
+            let mut value = String::new();
+            entry
+                .take(128)
+                .read_to_string(&mut value)
+                .map_err(|e| format!("{name}: migration marker: {e}"))?;
+            value.trim() == user_lists::MIXED_MARKER_VALUE
+        }
+        Ok(_) if !mixed => return Err(format!("{name}: mixed backup requires mixed mode")),
+        Ok(_) | Err(zip::result::ZipError::FileNotFound) => false,
+        Err(e) => return Err(format!("{name}: migration marker: {e}")),
+    };
+    if !mixed {
+        return Ok(());
+    }
+    if !marker {
+        return Err(format!(
+            "{name}: backup is missing a valid mixed migration marker"
+        ));
+    }
+    for file in user_lists::MIXED_LISTS {
+        match zip.by_name(file) {
+            Ok(mut entry) if entry.is_file() => {
+                let mut bytes = Vec::new();
+                entry
+                    .read_to_end(&mut bytes)
+                    .map_err(|e| format!("{name}: {file}: {e}"))?;
+                user_lists::check_mixed_backup_list(file, &bytes)
+                    .map_err(|e| format!("{name}: {file}: {e}"))?;
+            }
+            Err(zip::result::ZipError::FileNotFound) => {}
+            Ok(_) => return Err(format!("{name}: {file} is not a file")),
+            Err(e) => return Err(format!("{name}: {file}: {e}")),
+        }
+    }
+    Ok(())
+}
+
 /// Puts the backup's world in place of the current one, which goes to `backups/replaced-<time>/`. The
 /// server must be stopped. Returns where the old world went.
 pub fn restore(dir: &Path, config: &Config, name: &str) -> Result<Option<PathBuf>, String> {
@@ -259,10 +338,16 @@ pub fn restore(dir: &Path, config: &Config, name: &str) -> Result<Option<PathBuf
     let scratch = dir.join(".horizon/restore");
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
-    let file = File::open(&zip_path).map_err(|e| format!("{}: {e}", zip_path.display()))?;
-    ZipArchive::new(file)
-        .and_then(|mut z| z.extract(&scratch))
-        .map_err(|e| format!("{name}: {e}"))?;
+    let result = (|| {
+        let file = File::open(&zip_path).map_err(|e| format!("{}: {e}", zip_path.display()))?;
+        let mut zip = ZipArchive::new(file).map_err(|e| format!("{name}: {e}"))?;
+        check_restore_archive(&mut zip, name, restore_requires_mixed(dir, config)?)?;
+        zip.extract(&scratch).map_err(|e| format!("{name}: {e}"))
+    })();
+    if let Err(e) = result {
+        let _ = std::fs::remove_dir_all(&scratch);
+        return Err(e);
+    }
     let world = &config.world.name;
     let restored = scratch.join(world);
     if !restored.join("level.dat").is_file() {
@@ -345,6 +430,7 @@ pub fn restore_dimension(
     let result = (|| {
         let file = File::open(&zip_path).map_err(|e| format!("{}: {e}", zip_path.display()))?;
         let mut zip = ZipArchive::new(file).map_err(|e| format!("{name}: {e}"))?;
+        check_restore_archive(&mut zip, name, restore_requires_mixed(dir, config)?)?;
         let mut files = 0;
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i).map_err(|e| format!("{name}: {e}"))?;
@@ -420,6 +506,79 @@ pub fn restore_dimension(
 mod tests {
     use super::*;
     use horizon_server_launch::config;
+
+    #[test]
+    fn reviewed_mixed_backup_marker_and_restore_mode_follow_the_folder() {
+        let dir = std::env::temp_dir().join(format!("horizon-mixed-backup-{}", std::process::id()));
+        let world = dir.join("world");
+        std::fs::create_dir_all(&world).unwrap();
+        let level = world.join("level.dat");
+        std::fs::write(&level, b"before").unwrap();
+
+        let legacy = Config::default();
+        let legacy_name = "legacy.zip";
+        let legacy_path = create(&dir, &legacy, legacy_name).unwrap();
+        let mut zip = ZipArchive::new(File::open(legacy_path).unwrap()).unwrap();
+        assert!(check_restore_archive(&mut zip, legacy_name, false).is_ok());
+        assert!(
+            check_restore_archive(&mut zip, legacy_name, true)
+                .unwrap_err()
+                .contains("missing a valid mixed migration marker")
+        );
+        drop(zip);
+
+        std::fs::write(&level, b"live").unwrap();
+        let list = dir.join("whitelist.json");
+        std::fs::write(
+            &list,
+            r#"[{"name":"ely:Alex","uuid":"12345678-1234-7234-8234-123456789abc"}]"#,
+        )
+        .unwrap();
+        let marker = dir.join(user_lists::MIXED_MARKER);
+        for marker_present in [false, true] {
+            if marker_present {
+                std::fs::remove_file(&list).unwrap();
+                std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+                std::fs::write(&marker, user_lists::MIXED_MARKER_VALUE).unwrap();
+            }
+            for error in [
+                restore(&dir, &legacy, legacy_name).unwrap_err(),
+                restore_dimension(&dir, &legacy, legacy_name, "minecraft:overworld").unwrap_err(),
+            ] {
+                assert!(
+                    error.contains("missing a valid mixed migration marker"),
+                    "{error}"
+                );
+            }
+            assert_eq!(std::fs::read(&level).unwrap(), b"live");
+        }
+
+        let mut mixed = legacy;
+        mixed.proxy.enabled = true;
+        mixed.proxy.mixed_providers = true;
+        let mixed_name = "mixed.zip";
+        let mixed_path = create(&dir, &mixed, mixed_name).unwrap();
+        let mut zip = ZipArchive::new(File::open(mixed_path).unwrap()).unwrap();
+        {
+            let mut entry = zip.by_name(user_lists::MIXED_MARKER).unwrap();
+            let mut marker_value = String::new();
+            std::io::Read::read_to_string(&mut entry, &mut marker_value).unwrap();
+            assert_eq!(marker_value, user_lists::MIXED_MARKER_VALUE);
+        }
+        assert!(check_restore_archive(&mut zip, mixed_name, true).is_ok());
+        assert!(
+            check_restore_archive(&mut zip, mixed_name, false)
+                .unwrap_err()
+                .contains("mixed backup requires mixed mode")
+        );
+        drop(zip);
+
+        std::fs::write(&level, b"after backup").unwrap();
+        mixed.proxy.mixed_providers = false;
+        assert!(restore(&dir, &mixed, mixed_name).unwrap().is_some());
+        assert_eq!(std::fs::read(&level).unwrap(), b"live");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn names_sort_by_time() {

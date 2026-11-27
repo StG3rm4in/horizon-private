@@ -159,7 +159,9 @@ impl Game<'_> {
                     registries,
                     name,
                     uuid,
+                    mixed_providers,
                 } => {
+                    self.skin_profiles.borrow_mut().set_mixed(mixed_providers);
                     self.set_registries(registries);
                     self.extras_joined();
                     self.close_dialogs();
@@ -167,6 +169,17 @@ impl Game<'_> {
                         r.joined = true;
                         r.profile = uuid;
                         r.profile_name = name.clone();
+                        if mixed_providers && horizon_server_files::profiles::discovery_url() == "ely.by" {
+                            let slot = std::sync::Arc::new(std::sync::Mutex::new(ServicesKeys::Pending));
+                            r.services_keys = slot.clone();
+                            let _ = std::thread::Builder::new().name("Mixed chat keys".into()).spawn(move || {
+                                let keys = horizon_server_files::profiles::mixed_chat_keys();
+                                *slot.lock().unwrap_or_else(|e| e.into_inner()) = match keys {
+                                    Ok(keys) if !keys.is_empty() => ServicesKeys::Ready(keys),
+                                    _ => ServicesKeys::Missing,
+                                };
+                            });
+                        }
                         r.status = horizon_client::lang::get_or(
                             "multiplayer.downloadingTerrain",
                             "Loading terrain...",

@@ -156,6 +156,7 @@ pub fn spawn(
     worker_threads: u32,
     entities: &Entities,
     transfers: Option<&str>,
+    mixed_providers: bool,
 ) -> Result<(Child, Vec<Claim>), String> {
     let mut command = command(
         program,
@@ -168,6 +169,10 @@ pub fn spawn(
         transfers,
     )
     .map_err(|e| format!("{}: {e}", program.display()))?;
+    command.env(
+        horizon_platform::protocol::mixed::ENGINE_ENV,
+        if mixed_providers { "1" } else { "0" },
+    );
     let claims = lease(program, &command, dir)?;
     let child = command
         .spawn()
@@ -686,6 +691,7 @@ mod tests {
                 0,
                 &Entities::default(),
                 None,
+                false,
             ) {
                 Err(e) if e.contains("Text file busy") && tries < 50 => {
                     tries += 1;

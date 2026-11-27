@@ -49,6 +49,8 @@ pub struct Inner {
     /// The threshold the proxy compresses its clients' connections with.
     pub compression: i32,
     keys: Option<auth::Keys>,
+    mixed_providers: bool,
+    mixed_claims: Claims,
     status_enabled: bool,
     /// What the game is doing for the players: see [`Gate`].
     gate: Mutex<GameGate>,
@@ -157,12 +159,27 @@ pub struct Proxy {
     inner: Arc<Inner>,
 }
 
+impl Proxy {
+    pub(crate) fn mixed_providers(&self) -> bool {
+        self.inner.mixed_providers
+    }
+}
+
 /// Starts listening on the public address. `dir` is the server folder; `log` receives (level, line).
 pub fn start(
     dir: &Path,
     config: &Config,
     log: impl Fn(&str, &str) + Send + 'static,
 ) -> Result<Proxy, String> {
+    if config.proxy.mixed_providers
+        && (!config.proxy.enabled || !config.server.online_mode || config.transfer.enabled)
+    {
+        return Err("[proxy] mixed providers require online mode and a private engine".into());
+    }
+    horizon_platform::server_files::user_lists::check_mixed_folder(
+        dir,
+        config.proxy.mixed_providers,
+    )?;
     let bind: IpAddr = if config.server.bind.is_empty() {
         Ipv4Addr::UNSPECIFIED.into()
     } else {
@@ -185,6 +202,8 @@ pub fn start(
         secret,
         compression: compression_threshold(config, dir),
         keys,
+        mixed_providers: config.proxy.mixed_providers,
+        mixed_claims: Mutex::new(HashMap::new()),
         status_enabled: !config
             .effective_property(dir, "enable-status")
             .is_some_and(|v| v.trim().eq_ignore_ascii_case("false")),
@@ -198,7 +217,9 @@ pub fn start(
         log: Mutex::new(Box::new(log)),
         admission: Admission::new(config.server.max_players as usize),
     });
-    if inner.keys.is_some() && auth::ely_mode() {
+    if inner.mixed_providers {
+        inner.note("INFO", "Proxy session verification uses Mojang and Ely.by");
+    } else if inner.keys.is_some() && auth::ely_mode() {
         inner.note("INFO", "Proxy session verification uses Ely.by");
     }
     let accepting = inner.clone();
@@ -529,6 +550,146 @@ impl Drop for Deadline {
     }
 }
 
+type Claims = Mutex<HashMap<String, Arc<ClaimState>>>;
+
+struct ClaimState {
+    uuid: u128,
+    closer: wire::Closer,
+    // None before session registration. The boolean also covers cancellation
+    // between taking a claim and publishing the session.
+    session: Mutex<(bool, Option<std::sync::Weak<session::Session>>)>,
+}
+
+impl ClaimState {
+    fn cancel(&self) {
+        let session = {
+            let mut binding = self.session.lock().unwrap_or_else(|e| e.into_inner());
+            binding.0 = true;
+            binding.1.take().and_then(|s| s.upgrade())
+        };
+        self.closer.close();
+        if let Some(session) = session {
+            session.end();
+        }
+    }
+}
+
+struct NameClaim<'a> {
+    claims: &'a Claims,
+    name: String,
+    state: Arc<ClaimState>,
+}
+
+fn claim_conflict(owner: Option<u128>, incoming: u128) -> bool {
+    owner.is_some_and(|uuid| uuid != incoming)
+}
+
+fn can_claim(admitted_now: bool, same_owner: bool) -> bool {
+    admitted_now || same_owner
+}
+
+impl<'a> NameClaim<'a> {
+    fn acquire(
+        claims: &'a Claims,
+        name: &str,
+        uuid: u128,
+        closer: wire::Closer,
+        admitted_now: bool,
+    ) -> Option<Self> {
+        let name = name.to_ascii_lowercase();
+        let mut current = claims.lock().unwrap_or_else(|e| e.into_inner());
+        if claim_conflict(current.get(&name).map(|entry| entry.uuid), uuid) {
+            return None;
+        }
+        let previous = current
+            .iter()
+            .find(|(_, entry)| entry.uuid == uuid)
+            .map(|(old_name, entry)| (old_name.clone(), entry.clone()));
+        let same_owner = previous
+            .as_ref()
+            .is_some_and(|(old_name, _)| old_name == &name);
+        if !can_claim(admitted_now, same_owner) {
+            return None;
+        }
+        if let Some((old_name, _)) = &previous {
+            current.remove(old_name);
+        }
+        let state = Arc::new(ClaimState {
+            uuid,
+            closer,
+            session: Mutex::new((false, None)),
+        });
+        current.insert(name.clone(), state.clone());
+        drop(current);
+        if let Some((_, entry)) = previous {
+            entry.cancel();
+        }
+        Some(Self {
+            claims,
+            name,
+            state,
+        })
+    }
+
+    fn bind(&self, session: &Arc<session::Session>) -> bool {
+        let mut binding = self.state.session.lock().unwrap_or_else(|e| e.into_inner());
+        if binding.0 {
+            return false;
+        }
+        binding.1 = Some(Arc::downgrade(session));
+        true
+    }
+}
+
+impl Drop for NameClaim<'_> {
+    fn drop(&mut self) {
+        let mut current = self.claims.lock().unwrap_or_else(|e| e.into_inner());
+        if current
+            .get(&self.name)
+            .is_some_and(|entry| Arc::ptr_eq(entry, &self.state))
+        {
+            current.remove(&self.name);
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn reviewed_mixed_claims_inherit_cancel_and_keep_replacement_ownership() {
+    use horizon_platform::protocol::connection::Pipe;
+    use std::io::Read;
+
+    let connection = || {
+        let (local, mut peer) = Pipe::pair();
+        peer.set_nonblocking(true);
+        (Connection::local(local).reader.closer().unwrap(), peer)
+    };
+    let claims = Claims::default();
+    assert!(NameClaim::acquire(&claims, "Alex", 1, connection().0, false).is_none());
+    let (closer, mut original_peer) = connection();
+    let original = NameClaim::acquire(&claims, "Alex", 1, closer, true).unwrap();
+    assert!(NameClaim::acquire(&claims, "ALEX", 2, connection().0, true).is_none());
+    assert!(NameClaim::acquire(&claims, "Renamed", 1, connection().0, false).is_none());
+    assert!(!original.state.session.lock().unwrap().0);
+    assert_eq!(
+        original_peer.read(&mut [0; 1]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+
+    let (closer, _replacement_peer) = connection();
+    let replacement = NameClaim::acquire(&claims, "aLeX", 1, closer, false).unwrap();
+    assert!(original.state.session.lock().unwrap().0);
+    assert_eq!(original_peer.read(&mut [0; 1]).unwrap(), 0);
+
+    drop(original);
+    assert!(Arc::ptr_eq(
+        claims.lock().unwrap().get("alex").unwrap(),
+        &replacement.state,
+    ));
+    drop(replacement);
+    assert!(claims.lock().unwrap().is_empty());
+}
+
 fn serve_login(
     mut c: Connection,
     inner: &Arc<Inner>,
@@ -542,11 +703,23 @@ fn serve_login(
         wire::login::Serverbound::Hello(h) => h.name,
         _ => return Err("expected a login hello".into()),
     };
-    if !auth::valid_name(&name) {
+    if !auth::valid_name(&name)
+        || (inner.mixed_providers && !horizon_platform::protocol::mixed::valid_name(&name))
+    {
         return Err(format!("{name:?} is not a player name"));
     }
-    match auth::profile(&mut c, inner.keys.as_ref(), &name)? {
+    match auth::profile(&mut c, inner.keys.as_ref(), &name, inner.mixed_providers)? {
         Ok(who) => {
+            if let Some(provider) = who.provider {
+                inner.note(
+                    "INFO",
+                    &format!(
+                        "Verified {} (effective UUID {:032x})",
+                        provider.qualify(&who.name),
+                        who.uuid
+                    ),
+                );
+            }
             session::run(inner, c, who, peer, intent, deadline);
             Ok(())
         }

@@ -228,6 +228,7 @@ pub fn run(dir: &Path, answers: Answers) -> Result<(), String> {
         &players,
         op.as_deref(),
         cfg.server.online_mode,
+        cfg.proxy.mixed_providers,
         op_level,
     )?;
 
@@ -273,27 +274,28 @@ fn add_players(
     players: &[String],
     op: Option<&str>,
     online: bool,
+    mixed: bool,
     op_level: i32,
 ) -> Result<(), String> {
     if !players.is_empty() {
         let mut white = WhiteList::new(dir.join("whitelist.json"));
         // A list it can't read would be replaced by only these players: stop instead.
-        white.load().map_err(|e| {
+        white.load_mode(mixed).map_err(|e| {
             format!("whitelist.json: {e}; fix it or move it away, then run init again")
         })?;
         for name in players {
             white.add(WhiteEntry {
-                user: crate::lists::account(name, online)?,
+                user: crate::lists::account_mode(name, online, mixed)?,
             });
         }
         println!("Whitelisted: {}", players.join(", "));
     }
     if let Some(name) = op {
         let mut ops = OpList::new(dir.join("ops.json"));
-        ops.load()
+        ops.load_mode(mixed)
             .map_err(|e| format!("ops.json: {e}; fix it or move it away, then run init again"))?;
         ops.add(OpEntry {
-            user: crate::lists::account(name, online)?,
+            user: crate::lists::account_mode(name, online, mixed)?,
             // PlayerList.op: the level of `op-permission-level`.
             level: op_level,
             bypasses_player_limit: false,
@@ -348,7 +350,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let theirs = "[{\"uuid\": \"x\", \"name\": \"Kim\",}]";
         std::fs::write(dir.join("whitelist.json"), theirs).unwrap();
-        assert!(add_players(&dir, &["Alex".into()], None, false, 4).is_err());
+        assert!(add_players(&dir, &["Alex".into()], None, false, false, 4).is_err());
         assert_eq!(
             std::fs::read_to_string(dir.join("whitelist.json")).unwrap(),
             theirs
@@ -375,6 +377,8 @@ mod tests {
         };
         run(&dir, answers).unwrap();
         let cfg = Config::load(&dir).unwrap();
+        let written = std::fs::read_to_string(dir.join(config::FILE)).unwrap();
+        assert!(!written.contains("mixed_providers"));
         assert_eq!(
             (
                 cfg.world.name.as_str(),

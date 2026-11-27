@@ -5,6 +5,7 @@
 use super::wire::{
     Connection, RsaPrivateKey, login, offline_uuid, random_bytes, server_hash, translated_json,
 };
+use horizon_platform::protocol::mixed::{self, Provider};
 use std::{
     sync::Mutex,
     time::{Duration, Instant},
@@ -22,6 +23,7 @@ static VERIFY_ENDPOINT: Mutex<Option<(String, String, Instant)>> = Mutex::new(No
 
 /// Who is joining, as the account service (or the offline name) says.
 pub struct Profile {
+    pub provider: Option<Provider>,
     pub uuid: u128,
     pub name: String,
     pub properties: Vec<login::Property>,
@@ -55,10 +57,12 @@ pub fn profile(
     c: &mut Connection,
     keys: Option<&Keys>,
     name: &str,
+    mixed_providers: bool,
 ) -> Result<Result<Profile, String>, String> {
     let e = |e: super::wire::Error| e.to_string();
     let Some(keys) = keys else {
         return Ok(Ok(Profile {
+            provider: None,
             uuid: offline_uuid(name),
             name: name.to_owned(),
             properties: Vec::new(),
@@ -92,11 +96,20 @@ pub fn profile(
         .ok_or("Protocol error")?;
     let digest = server_hash("", &secret, &keys.public_der);
     c.enable_encryption(&secret);
-    Ok(match has_joined(name, &digest) {
+    let verified = if mixed_providers {
+        verify_mixed_with(name, &digest, mixed_verify)
+    } else {
+        has_joined(name, &digest)
+    };
+    Ok(match verified {
         Ok(Some(p)) => Ok(p),
         Ok(None) => Err(translated_json(
             "multiplayer.disconnect.unverified_username",
             "Failed to verify username!",
+        )),
+        Err(_) if mixed_providers => Err(translated_json(
+            "multiplayer.disconnect.unverified_username",
+            "The player session could not be verified.",
         )),
         Err(_) => Err(translated_json(
             "multiplayer.disconnect.authservers_down",
@@ -200,6 +213,157 @@ fn has_joined_via(discovery: &str, name: &str, hash: &str) -> Result<Option<Prof
     }
 }
 
+fn verify_mixed_with(
+    name: &str,
+    hash: &str,
+    mut verify: impl FnMut(Provider, &str, &str) -> Result<Option<Profile>, String>,
+) -> Result<Option<Profile>, String> {
+    let mut error = None;
+    for provider in [Provider::Mojang, Provider::Ely] {
+        if !mixed::provider_name(provider, name) {
+            continue;
+        }
+        match verify(provider, name, hash) {
+            Ok(Some(mut profile)) => {
+                if let Some(id) = provider.effective(profile.uuid)
+                    && mixed::provider_name(provider, &profile.name)
+                    && profile.name.eq_ignore_ascii_case(name)
+                {
+                    profile.uuid = id;
+                    profile.provider = Some(provider);
+                    let texture = profile.properties.into_iter().find(|p| {
+                        p.name == "textures"
+                            && p.value.len() <= 32767
+                            && p.signature.as_ref().is_some_and(|s| s.len() <= 1024)
+                    });
+                    profile.properties = texture.into_iter().collect();
+                    profile.properties.push(login::Property {
+                        name: mixed::PROPERTY.to_owned(),
+                        value: provider.label().to_owned(),
+                        signature: None,
+                    });
+                    return Ok(Some(profile));
+                }
+                error = Some(format!("Invalid {} session profile", provider.label()));
+            }
+            Ok(None) => {}
+            Err(why) => error = Some(why),
+        }
+    }
+    error.map_or(Ok(None), Err)
+}
+
+fn mixed_miss(provider: Provider, code: u16) -> bool {
+    matches!(code, 204 | 404) || (provider == Provider::Ely && matches!(code, 400 | 401))
+}
+
+#[cfg(test)]
+#[test]
+fn reviewed_mixed_classifies_provider_misses_and_names() {
+    assert!(mixed_miss(Provider::Ely, 400));
+    assert!(mixed_miss(Provider::Ely, 401));
+    assert!(!mixed_miss(Provider::Mojang, 401));
+    assert!(!mixed_miss(Provider::Ely, 429));
+    assert!(!mixed_miss(Provider::Ely, 500));
+    assert!(mixed::target("ely:Test-Name").is_some());
+    assert!(mixed::target("mojang:Test-Name").is_none());
+}
+
+fn mixed_verify(provider: Provider, name: &str, hash: &str) -> Result<Option<Profile>, String> {
+    use std::io::Read;
+    const LIMIT: u64 = 128 * 1024;
+    let failed = || format!("{} session verification failed", provider.label());
+    let url = format!(
+        "{}?username={}&serverId={}",
+        provider.verify_url(),
+        encode(name),
+        encode(hash)
+    );
+    let response = match ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(4))
+        .redirects(0)
+        .build()
+        .get(&url)
+        .call()
+    {
+        Ok(response) if response.status() == 204 => return Ok(None),
+        Err(ureq::Error::Status(code, _)) if mixed_miss(provider, code) => return Ok(None),
+        Ok(response) if response.status() == 200 => response,
+        _ => return Err(failed()),
+    };
+    let mut body = String::new();
+    response
+        .into_reader()
+        .take(LIMIT + 1)
+        .read_to_string(&mut body)
+        .map_err(|_| failed())?;
+    if body.len() as u64 > LIMIT {
+        return Err(failed());
+    }
+    let doc: serde_json::Value = serde_json::from_str(&body).map_err(|_| failed())?;
+    let id = doc["id"]
+        .as_str()
+        .and_then(mixed::parse_uuid)
+        .ok_or_else(&failed)?;
+    let mut profile = parse_joined(&body).ok_or_else(&failed)?;
+    profile.uuid = id;
+    Ok(Some(profile))
+}
+
+#[cfg(test)]
+#[test]
+fn mixed_verification_orders_calls_and_records_provider() {
+    let mut seen = Vec::new();
+    let raw = 0x12345678_1234_4234_8234_123456789abcu128;
+    let answer = || Profile {
+        uuid: raw,
+        name: "Alex".into(),
+        properties: vec![login::Property {
+            name: mixed::PROPERTY.into(),
+            value: "forged".into(),
+            signature: None,
+        }],
+        provider: None,
+    };
+    let ely = verify_mixed_with("aLeX", "-fresh", |provider, name, hash| {
+        seen.push(provider);
+        assert_eq!((name, hash), ("aLeX", "-fresh"));
+        match provider {
+            Provider::Mojang => Err("timeout".into()),
+            Provider::Ely => Ok(Some(answer())),
+        }
+    })
+    .unwrap()
+    .unwrap();
+    assert_eq!(seen, [Provider::Mojang, Provider::Ely]);
+    assert_eq!(ely.provider, Some(Provider::Ely));
+    assert_eq!(ely.uuid, Provider::Ely.effective(raw).unwrap());
+    assert_eq!(ely.properties.len(), 1);
+    assert_eq!(ely.properties[0].value, "ely");
+
+    let mojang = verify_mixed_with("Alex", "-fresh", |provider, _, _| {
+        assert_eq!(provider, Provider::Mojang);
+        Ok(Some(answer()))
+    })
+    .unwrap()
+    .unwrap();
+    assert_eq!(mojang.uuid, raw);
+    assert_eq!(mojang.provider, Some(Provider::Mojang));
+    assert!(
+        verify_mixed_with("Alex", "0", |_, _, _| Ok(None))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        verify_mixed_with("Alex", "0", |provider, _, _| match provider {
+            Provider::Mojang => Ok(None),
+            Provider::Ely => Err("timeout".into()),
+        })
+        .is_err()
+    );
+    assert!(verify_mixed_with("SomeoneElse", "0", |_, _, _| Ok(Some(answer()))).is_err());
+}
+
 fn encode(text: &str) -> String {
     let mut out = String::new();
     for b in text.bytes() {
@@ -236,6 +400,7 @@ pub fn parse_joined(body: &str) -> Option<Profile> {
         })
         .collect();
     Some(Profile {
+        provider: None,
         uuid,
         name: v.get("name")?.as_str()?.to_owned(),
         properties,

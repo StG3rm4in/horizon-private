@@ -33,6 +33,29 @@ pub struct NameAndId {
     pub name: String,
 }
 impl NameAndId {
+    /// A player already admitted by the server, for lists and the user cache.
+    pub fn from_player(id: u128, name: &str) -> Option<Self> {
+        use horizon_protocol::mixed;
+        let name = if mixed::engine_enabled() {
+            let (provider, _) = mixed::upstream(id)?;
+            if !mixed::valid_name(name) {
+                return None;
+            }
+            provider.qualify(name)
+        } else {
+            name.to_owned()
+        };
+        Some(Self { id, name })
+    }
+
+    pub fn valid_mixed_list_name(&self) -> bool {
+        use horizon_protocol::mixed;
+        matches!(
+            (mixed::upstream(self.id), mixed::target(&self.name)),
+            (Some((id_provider, _)), Some((name_provider, _))) if id_provider == name_provider
+        )
+    }
+
     pub fn offline(name: &str) -> Self {
         Self {
             id: horizon_protocol::crypto::offline_uuid(name),
@@ -155,6 +178,9 @@ fn zone_offset(zone: &str) -> Option<i64> {
 pub trait Entry: Clone {
     type User: Clone;
     fn user(&self) -> &Self::User;
+    fn valid_mixed(&self) -> bool {
+        true
+    }
     fn key(user: &Self::User) -> String;
     fn from_json(o: &Json) -> Option<Self>;
     fn serialize(&self, o: &mut Json);
@@ -177,6 +203,9 @@ pub struct OpEntry {
 }
 impl Entry for OpEntry {
     type User = NameAndId;
+    fn valid_mixed(&self) -> bool {
+        self.user.valid_mixed_list_name()
+    }
     fn user(&self) -> &NameAndId {
         &self.user
     }
@@ -212,6 +241,9 @@ pub struct WhiteEntry {
 }
 impl Entry for WhiteEntry {
     type User = NameAndId;
+    fn valid_mixed(&self) -> bool {
+        self.user.valid_mixed_list_name()
+    }
     fn user(&self) -> &NameAndId {
         &self.user
     }
@@ -292,6 +324,9 @@ impl<T> BanEntry<T> {
 }
 impl Entry for BanEntry<NameAndId> {
     type User = NameAndId;
+    fn valid_mixed(&self) -> bool {
+        self.user.valid_mixed_list_name()
+    }
     fn same(&self, other: &Self) -> bool {
         self == other
     }
@@ -469,6 +504,44 @@ impl<E: Entry> UserList<E> {
     }
     /// StoredUserList.load: a missing file leaves the list as it is; a path that exists but cannot
     /// be read is an error, as vanilla's reader throws before it clears the map.
+    pub fn load_mode(&mut self, mixed: bool) -> Result<(), String> {
+        if !mixed {
+            return self.load();
+        }
+        let text = match read_saved(&self.file, |bytes| {
+            Self::mixed_map(&read_utf8(bytes)).is_ok()
+        }) {
+            Ok((text, _)) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(format!("{}: {e}", self.file.display())),
+        };
+        let entries =
+            Self::mixed_map(&text).map_err(|e| format!("{}: {e}", self.file.display()))?;
+        self.map = entries;
+        Ok(())
+    }
+
+    fn mixed_map(text: &str) -> Result<JavaHashMap<JKey, E>, String> {
+        if text.trim().is_empty() {
+            return Ok(JavaHashMap::default());
+        }
+        let Json::Array(items) = json::parse(text, false)? else {
+            return Err("Expected a JSON array".into());
+        };
+        let mut map = JavaHashMap::default();
+        for item in items {
+            let entry = E::from_json(&item)
+                .filter(|e| e.valid_mixed())
+                .ok_or("Invalid entry in mixed provider list; audit UUID and provider")?;
+            let key = JKey(E::key(entry.user()));
+            if map.get(&key).is_some() {
+                return Err("Duplicate UUID in mixed provider list".into());
+            }
+            map.put(key, entry);
+        }
+        Ok(map)
+    }
+
     pub fn load(&mut self) -> Result<(), String> {
         match read_saved(&self.file, |bytes| Self::whole(&read_utf8(bytes))) {
             Ok((text, copy)) => {
@@ -509,6 +582,206 @@ impl<E: Entry> UserList<E> {
         }
         Ok(())
     }
+}
+
+#[cfg(test)]
+#[test]
+fn mixed_lists_require_qualified_namespace_matched_rows() {
+    let row = r#"{"name":"ely:Alex","uuid":"12345678-1234-7234-8234-123456789abc"}"#;
+    assert!(WhiteList::mixed_map(&format!("[{row}]")).is_ok());
+    assert!(WhiteList::mixed_map(&format!("[{row},{row}]")).is_err());
+    assert!(WhiteList::mixed_map(&format!("[{row}]").replace("ely:", "")).is_err());
+    assert!(WhiteList::mixed_map(&format!("[{row}]").replace("ely:", "mojang:")).is_err());
+    assert!(WhiteList::mixed_map(&format!("[{row}]").replace("-7234-", "-4234-")).is_err());
+    assert!(WhiteList::mixed_map("[{}]").is_err());
+}
+
+pub const MIXED_MARKER: &str = ".horizon/mixed-identities-v1";
+pub const MIXED_MARKER_VALUE: &str = "mixed-identities-v1";
+pub const MIXED_LISTS: [&str; 3] = ["ops.json", "whitelist.json", "banned-players.json"];
+
+/// Check the live lists and the copies from which a durable load can recover.
+pub fn legacy_mixed_evidence(dir: &std::path::Path) -> Result<Option<String>, String> {
+    let marker = dir.join(MIXED_MARKER);
+    let evidence = |path: &std::path::Path| {
+        format!(
+            "{} is evidence of mixed identities; restore the complete pre-migration directory into a clean folder to return to legacy mode",
+            path.display()
+        )
+    };
+    match std::fs::symlink_metadata(&marker) {
+        Ok(_) => return Ok(Some(evidence(&marker))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("{}: {e}", marker.display())),
+    }
+    for file in MIXED_LISTS {
+        let path = dir.join(file);
+        let copies = crate::durable::kept_copies(&path).map_err(|e| e.to_string())?;
+        for path in std::iter::once(path).chain(copies) {
+            let text = match std::fs::read(&path) {
+                Ok(bytes) => read_utf8(&bytes),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(format!("{}: {e}", path.display())),
+            };
+            if has_mixed_rows(&text) {
+                return Ok(Some(evidence(&path)));
+            }
+        }
+    }
+    Ok(None)
+}
+
+pub fn check_mixed_folder(dir: &std::path::Path, mixed: bool) -> Result<(), String> {
+    if !mixed {
+        return match legacy_mixed_evidence(dir)? {
+            Some(why) => Err(why),
+            None => Ok(()),
+        };
+    }
+    match mixed_start_refusal(dir)? {
+        Some(why) => Err(why),
+        None => Ok(()),
+    }
+}
+
+/// Return a configuration refusal separately from a failure inspecting the marker.
+pub fn mixed_start_refusal(dir: &std::path::Path) -> Result<Option<String>, String> {
+    use std::io::ErrorKind::NotFound;
+
+    let marker = dir.join(MIXED_MARKER);
+    let refusal = || {
+        Some(format!(
+            "Mixed start requires an audited migration and a valid {}",
+            marker.display()
+        ))
+    };
+    match std::fs::symlink_metadata(&marker) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return Ok(refusal()),
+        Err(e) if e.kind() == NotFound => return Ok(refusal()),
+        Err(e) => return Err(format!("{}: {e}", marker.display())),
+    }
+    match std::fs::read(&marker) {
+        Ok(value) if std::str::from_utf8(&value).is_ok_and(|s| s.trim() == MIXED_MARKER_VALUE) => {
+            Ok(None)
+        }
+        Ok(_) => Ok(refusal()),
+        Err(e) if e.kind() == NotFound => Ok(refusal()),
+        Err(e) => Err(format!("{}: {e}", marker.display())),
+    }
+}
+
+fn has_mixed_rows(text: &str) -> bool {
+    let Ok(Json::Array(items)) = json::parse(text, false) else {
+        return false;
+    };
+    items
+        .iter()
+        .filter_map(NameAndId::from_json)
+        .any(|user| user.valid_mixed_list_name())
+}
+
+pub fn check_mixed_backup_list(name: &str, bytes: &[u8]) -> Result<(), String> {
+    let text = read_utf8(bytes);
+    match name {
+        "ops.json" => OpList::mixed_map(&text).map(|_| ()),
+        "whitelist.json" => WhiteList::mixed_map(&text).map(|_| ()),
+        "banned-players.json" => BanList::mixed_map(&text).map(|_| ()),
+        _ => Err(format!("Unknown mixed player list: {name}")),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn reviewed_mixed_folder_evidence_requires_matching_uuid_and_name() {
+    let dir = std::env::temp_dir().join(format!("horizon-mixed-evidence-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let list = dir.join("banned-players.json");
+
+    for name in ["ely:x", "mojang:x"] {
+        let id = uuid_string(NameAndId::offline(name).id);
+        std::fs::write(&list, format!(r#"[{{"name":"{name}","uuid":"{id}"}}]"#)).unwrap();
+        assert_eq!(legacy_mixed_evidence(&dir).unwrap(), None, "{name}");
+    }
+    for (name, version, expected) in [
+        ("MOJANG:Alex", 4, true),
+        ("ely:Alex", 7, true),
+        ("ely:Alex", 8, true),
+        ("mojang:Alex", 7, false),
+        ("ely:Alex", 4, false),
+        ("Alex", 7, false),
+        ("Alex", 8, false),
+    ] {
+        std::fs::write(
+            &list,
+            format!(
+                r#"[{{"name":"{name}","uuid":"12345678-1234-{version}234-8234-123456789abc"}}]"#
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            legacy_mixed_evidence(&dir).unwrap().is_some(),
+            expected,
+            "{name} v{version}"
+        );
+    }
+
+    // A directory at the list path fails on read even for a privileged test runner.
+    std::fs::remove_file(&list).unwrap();
+    std::fs::create_dir(&list).unwrap();
+    let error = legacy_mixed_evidence(&dir).unwrap_err();
+    assert!(error.contains("banned-players.json"), "{error}");
+    std::fs::remove_dir(&list).unwrap();
+
+    let marker = dir.join(MIXED_MARKER);
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    assert!(mixed_start_refusal(&dir).unwrap().is_some());
+    std::fs::write(&marker, b"invalid marker").unwrap();
+    assert!(legacy_mixed_evidence(&dir).unwrap().is_some());
+    assert!(mixed_start_refusal(&dir).unwrap().is_some());
+    std::fs::write(&marker, MIXED_MARKER_VALUE).unwrap();
+    assert_eq!(mixed_start_refusal(&dir).unwrap(), None);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+impl<E: Entry<User = NameAndId>> UserList<E> {
+    pub fn stored_profile(&self, target: &str) -> Result<Option<NameAndId>, &'static str> {
+        let id = horizon_protocol::mixed::parse_uuid(target);
+        let entries = self.entries();
+        let mut matches = entries.into_iter().map(Entry::user).filter(|user| {
+            id.map_or_else(
+                || user.name.eq_ignore_ascii_case(target),
+                |id| user.id == id,
+            )
+        });
+        let first = matches.next();
+        if matches.next().is_some() {
+            return Err("Multiple stored rows match this name. Use the effective UUID.");
+        }
+        Ok(first.cloned())
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn reviewed_mixed_removal_prefers_stored_names_and_disambiguates_by_id() {
+    let mut list = WhiteList::new("unused");
+    let row = r#"{"name":"mojang:Bob","uuid":"12345678-1234-4234-8234-123456789abc"}"#;
+    list.map = WhiteList::mixed_map(&format!("[{row}]")).unwrap();
+    let first = list.stored_profile("MOJANG:bob").unwrap().unwrap();
+    assert_eq!(
+        list.stored_profile(&format!("{:032x}", first.id)).unwrap(),
+        Some(first.clone())
+    );
+    let second = row.replace("789abc", "789abd");
+    list.map = WhiteList::mixed_map(&format!("[{row},{second}]")).unwrap();
+    assert!(list.stored_profile("mojang:Bob").is_err());
+    assert_eq!(
+        list.stored_profile(&format!("{:032x}", first.id)).unwrap(),
+        Some(first)
+    );
+    assert!(WhiteList::mixed_map("").unwrap().entries().next().is_none());
+    assert!(WhiteList::mixed_map(" \n").is_ok());
 }
 
 pub type OpList = UserList<OpEntry>;

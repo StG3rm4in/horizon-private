@@ -209,16 +209,14 @@ impl Game<'_> {
             return Reply::translated("horizon.tempban.dedicated_required", &[]);
         };
         // A player here, else one the server has seen (the user cache).
-        let user = host
-            .hub
-            .guests
-            .iter()
-            .find(|g| g.name.eq_ignore_ascii_case(name))
-            .map(|g| NameAndId {
-                id: g.uuid,
-                name: g.name.clone(),
-            })
-            .or_else(|| self.resolve_name(name));
+        let user = if horizon_protocol::mixed::engine_enabled() {
+            self.resolve_name(name)
+        } else {
+            host.hub.guests.iter()
+                .find(|g| g.name.eq_ignore_ascii_case(name))
+                .and_then(|g| NameAndId::from_player(g.uuid, &g.name))
+                .or_else(|| self.resolve_name(name))
+        };
         let Some(user) = user else {
             return Reply::no_player();
         };

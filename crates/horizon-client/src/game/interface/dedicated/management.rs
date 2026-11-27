@@ -56,6 +56,7 @@ impl Game<'_> {
         let Ok(body) = serde_json::from_str::<Value>(body) else {
             return json!({ "error": "a management request is a connection number and a JSON object" });
         };
+        let mixed = horizon_protocol::mixed::engine_enabled();
         let entries = body["entries"].as_array().cloned().unwrap_or_default();
         let lists = state.lists.clone();
         match body["method"].as_str().unwrap_or_default() {
@@ -546,7 +547,11 @@ impl Game<'_> {
                 }
             }
             "allowlist/remove" => {
-                for user in entries.iter().filter_map(|e| self.management_user(e)) {
+                for user in entries.iter().filter_map(|e| self.management_removal(e, || {
+                        let target = e["id"].as_str().or_else(|| e["name"].as_str())?;
+                        let stored = lists.lock().unwrap().white.stored_profile(target);
+                        Some(stored)
+                    })) {
                     rpc(format!("Remove player '{}' from allowlist", shown(&user)));
                     lists.lock().unwrap().white.remove(&user);
                 }
@@ -554,10 +559,31 @@ impl Game<'_> {
                 self.kick_unlisted_players(&lists);
             }
             "allowlist/set" => {
-                let wanted: Vec<NameAndId> = entries
-                    .iter()
-                    .filter_map(|e| self.management_user(e))
-                    .collect();
+                let mut resolved = entries.iter().map(|e| {
+                    if !mixed {
+                        return self.management_user(e);
+                    }
+                    let player = e;
+                    let target = player["id"].as_str().or_else(|| player["name"].as_str())?;
+                    let user = lists.lock().unwrap().white.stored_profile(target).ok()??;
+                    if !player["name"].is_null()
+                        && !player["name"].as_str().is_some_and(|name| user.name.eq_ignore_ascii_case(name))
+                    {
+                        return None;
+                    }
+                    Some(user)
+                });
+                let wanted: Vec<NameAndId> = if mixed {
+                    if !body["entries"].is_array() {
+                        return json!({"error": "entries must be an array"});
+                    }
+                    let Some(wanted) = resolved.by_ref().collect::<Option<Vec<_>>>() else {
+                        return json!({"error": "a player profile could not be resolved"});
+                    };
+                    wanted
+                } else {
+                    resolved.flatten().collect()
+                };
                 let current: Vec<NameAndId> = lists
                     .lock()
                     .unwrap()
@@ -595,16 +621,41 @@ impl Game<'_> {
                 }
             }
             "bans/remove" => {
-                for user in entries.iter().filter_map(|e| self.management_user(e)) {
+                for user in entries.iter().filter_map(|e| self.management_removal(e, || {
+                        let target = e["id"].as_str().or_else(|| e["name"].as_str())?;
+                        let stored = lists.lock().unwrap().bans.stored_profile(target);
+                        Some(stored)
+                    })) {
                     rpc(format!("Remove player '{}' from banlist", shown(&user)));
                     lists.lock().unwrap().bans.remove(&user);
                 }
             }
             "bans/set" => {
-                let wanted: Vec<Ban> = entries
-                    .iter()
-                    .filter_map(|e| self.management_ban(e))
-                    .collect();
+                let mut resolved = entries.iter().map(|e| {
+                    if !mixed {
+                        return self.management_ban(e);
+                    }
+                    let player = &e["player"];
+                    let target = player["id"].as_str().or_else(|| player["name"].as_str())?;
+                    let user = lists.lock().unwrap().bans.stored_profile(target).ok()??;
+                    if !player["name"].is_null()
+                        && !player["name"].as_str().is_some_and(|name| user.name.eq_ignore_ascii_case(name))
+                    {
+                        return None;
+                    }
+                    Some(user).map(|user| Self::management_ban_for(e, user))
+                });
+                let wanted: Vec<Ban> = if mixed {
+                    if !body["entries"].is_array() {
+                        return json!({"error": "entries must be an array"});
+                    }
+                    let Some(wanted) = resolved.by_ref().collect::<Option<Vec<_>>>() else {
+                        return json!({"error": "a player profile could not be resolved"});
+                    };
+                    wanted
+                } else {
+                    resolved.flatten().collect()
+                };
                 let current: Vec<Ban> = lists
                     .lock()
                     .unwrap()
@@ -686,7 +737,11 @@ impl Game<'_> {
             "operators/remove" => {
                 let users: Vec<_> = entries
                     .iter()
-                    .filter_map(|e| self.management_user(e))
+                    .filter_map(|e| self.management_removal(e, || {
+                        let target = e["id"].as_str().or_else(|| e["name"].as_str())?;
+                        let stored = lists.lock().unwrap().ops.stored_profile(target);
+                        Some(stored)
+                    }))
                     .collect();
                 for user in users {
                     rpc(format!("Deop '{}'", shown(&user)));
@@ -699,10 +754,31 @@ impl Game<'_> {
                 self.sync_ops(&lists);
             }
             "operators/set" => {
-                let wanted: Vec<Op> = entries
-                    .iter()
-                    .filter_map(|e| self.management_op(e))
-                    .collect();
+                let mut resolved = entries.iter().map(|e| {
+                    if !mixed {
+                        return self.management_op(e);
+                    }
+                    let player = &e["player"];
+                    let target = player["id"].as_str().or_else(|| player["name"].as_str())?;
+                    let user = lists.lock().unwrap().ops.stored_profile(target).ok()??;
+                    if !player["name"].is_null()
+                        && !player["name"].as_str().is_some_and(|name| user.name.eq_ignore_ascii_case(name))
+                    {
+                        return None;
+                    }
+                    Some(user).map(|user| Self::management_op_for(e, user))
+                });
+                let wanted: Vec<Op> = if mixed {
+                    if !body["entries"].is_array() {
+                        return json!({"error": "entries must be an array"});
+                    }
+                    let Some(wanted) = resolved.by_ref().collect::<Option<Vec<_>>>() else {
+                        return json!({"error": "a player profile could not be resolved"});
+                    };
+                    wanted
+                } else {
+                    resolved.flatten().collect()
+                };
                 let current: Vec<Op> = lists
                     .lock()
                     .unwrap()
@@ -805,11 +881,16 @@ impl Game<'_> {
 
     /// An `OperatorDto`: the player found, and the level and bypass when given.
     fn management_op(&self, entry: &Value) -> Option<Op> {
-        Some(Op {
-            user: self.management_user(&entry["player"])?,
+        let user = self.management_user(&entry["player"])?;
+        Some(Self::management_op_for(entry, user))
+    }
+
+    fn management_op_for(entry: &Value, user: NameAndId) -> Op {
+        Op {
+            user,
             level: entry["permissionLevel"].as_i64().map(|l| l as i32),
             bypass: entry["bypassesPlayerLimit"].as_bool(),
-        })
+        }
     }
 
     /// `PlayerListService.getPlayer(id, name)`: an online player, by id first; their address.
@@ -837,19 +918,56 @@ impl Game<'_> {
     /// starts now.
     fn management_ban(&self, entry: &Value) -> Option<Ban> {
         let user = self.management_user(&entry["player"])?;
+        Some(Self::management_ban_for(entry, user))
+    }
+
+    fn management_ban_for(entry: &Value, user: NameAndId) -> Ban {
         let source = entry["source"].as_str().unwrap_or("Management server");
         let reason = entry["reason"].as_str().map(str::to_owned);
-        Some(BanEntry::new(
+        BanEntry::new(
             user,
             Some(source.to_owned()),
             entry["expires"].as_i64(),
             reason,
-        ))
+        )
     }
 
     /// `MinecraftPlayerListService.getUser`: by id, the user cache, else the session service; by name, the
     /// user cache, else the profile service (an offline server's offline player).
+    fn management_removal(
+        &self,
+        player: &Value,
+        lookup: impl FnOnce() -> Option<std::result::Result<Option<NameAndId>, &'static str>>,
+    ) -> Option<NameAndId> {
+        if horizon_protocol::mixed::engine_enabled() {
+            match lookup()? {
+                Ok(Some(user)) => {
+                    return player["name"].as_str()
+                        .is_none_or(|name| user.name.eq_ignore_ascii_case(name))
+                        .then_some(user);
+                }
+                Ok(None) if player["id"].is_null() => {}
+                Ok(None) => return None,
+                Err(why) => {
+                    log::warn!("{why}");
+                    return None;
+                }
+            }
+        }
+        self.management_user(player)
+    }
+
     fn management_user(&self, player: &Value) -> Option<NameAndId> {
+        if horizon_protocol::mixed::engine_enabled() && !player["id"].is_null() {
+            let id = horizon_protocol::mixed::parse_uuid(player["id"].as_str()?)?;
+            let user = profiles::find_mixed_id(id)?;
+            if !player["name"].is_null()
+                && !user.name.eq_ignore_ascii_case(player["name"].as_str()?)
+            {
+                return None;
+            }
+            return Some(user);
+        }
         if let Some(id) = player["id"]
             .as_str()
             .and_then(|s| u128::from_str_radix(s, 16).ok())

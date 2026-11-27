@@ -21,7 +21,13 @@ static EVENTS: Mutex<Events> = Mutex::new(Events {
 
 /// Records one event: its kind, the player's name and UUID, and what else it says.
 pub(in crate::game) fn record(kind: &str, name: &str, uuid: u128, mut fields: Value) {
+    use horizon_protocol::mixed;
     fields["name"] = name.into();
+    if mixed::engine_enabled() && let Some((provider, _)) = mixed::upstream(uuid) {
+        let display = mixed::target(name).map_or(name, |(_, display)| display);
+        fields["name"] = provider.qualify(display).into();
+        fields["display_name"] = display.into();
+    }
     fields["uuid"] = horizon_protocol::crypto::uuid_string(uuid).into();
     push(kind, fields);
 }
