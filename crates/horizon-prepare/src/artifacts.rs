@@ -796,7 +796,7 @@ pub(crate) fn import_manifest(
             // Another launcher's rewrite of Mojang's file (HMCL and PCL add their own fields to
             // the same jars, #1772), or one Mojang republished: Mojang's own copy saved as the
             // imported one is used instead.
-        let pinned = lock.pin("manifest_sha1")?;
+            let pinned = lock.pin("manifest_sha1")?;
             if destination.exists() && lock.manifest_accepted(&digest(&destination, "sha1")?) {
                 // A previous run already saved Mojang's own copy.
             } else if let Some(fetch) = fetch {
@@ -819,7 +819,7 @@ pub(crate) fn import_manifest(
             fs::create_dir_all(&lock.directory).map_err(|e| e.to_string())?;
             fs::copy(source, &destination).map_err(|e| e.to_string())?;
         }
-        } else if !(destination.exists() && lock.manifest_accepted(&digest(&destination, "sha1")?)) {
+    } else if !(destination.exists() && lock.manifest_accepted(&digest(&destination, "sha1")?)) {
         match fetch {
             Some(fetch) => {
                 let pinned = lock.pin("manifest_sha1")?;
