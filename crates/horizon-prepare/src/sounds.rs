@@ -1,7 +1,7 @@
 //! The pinned version's sounds, title panorama, Unifont glyphs and built-in resource packs
 //! from the player's own launcher install, each object checked against the asset index's SHA-1, copied into
 //! `.local/horizon-client/<version>/assets` where the game reads them (tools/fetch_sounds.py and
-//! the tools/lab.py functions it called). Nothing is downloaded.
+//! the tools/lab.py functions it called). Nothing is fetched unless a `Fetch` is supplied.
 
 use crate::artifacts::{self, Inputs, Lock};
 use crate::pyjson::Value;
@@ -77,20 +77,20 @@ fn is_sound(name: &str) -> bool {
 /// `.local/horizon-client/<version>`; returns that folder. Files already there with the right
 /// SHA-1 are kept.
 pub fn sounds(root: &Path, minecraft: Option<&Path>, log: Log) -> Result<PathBuf, String> {
-    add_assets("sounds", root, None, minecraft, &Inputs::default(), log)
+    add_assets("sounds", root, None, minecraft, &Inputs::default(), false, log)
 }
 
 /// Replaces the client JAR's 1x1 title placeholders with the full panorama from the
 /// launcher's asset store. Also usable on already-prepared resources without Java.
 pub fn panorama(root: &Path, minecraft: Option<&Path>, log: Log) -> Result<PathBuf, String> {
-    add_assets("panorama", root, None, minecraft, &Inputs::default(), log)
+    add_assets("panorama", root, None, minecraft, &Inputs::default(), false, log)
 }
 
 /// Replaces the client JAR's empty `font/include/unifont.json` with the asset index's, and
 /// adds the GNU Unifont glyphs it names (`font/unifont*.zip`): the default font's fallback for
 /// every character the bitmap fonts lack (#1076). Also usable on prepared resources without Java.
 pub fn fonts(root: &Path, minecraft: Option<&Path>, log: Log) -> Result<PathBuf, String> {
-    add_assets("fonts", root, None, minecraft, &Inputs::default(), log)
+    add_assets("fonts", root, None, minecraft, &Inputs::default(), false, log)
 }
 
 /// Every bundled language and the language list, both of which only the asset index holds
@@ -98,7 +98,7 @@ pub fn fonts(root: &Path, minecraft: Option<&Path>, log: Log) -> Result<PathBuf,
 /// language screen offers, `minecraft/lang/<code>.json` the strings each one draws (#1272).
 /// Also usable on already-prepared resources without Java.
 pub fn languages(root: &Path, minecraft: Option<&Path>, log: Log) -> Result<PathBuf, String> {
-    add_assets("languages", root, None, minecraft, &Inputs::default(), log)
+    add_assets("languages", root, None, minecraft, &Inputs::default(), false, log)
 }
 
 const LANGUAGES: [&str; 1] = ["pack.mcmeta"];
@@ -111,7 +111,7 @@ fn is_language(name: &str) -> bool {
 #[cfg(test)]
 fn optional_assets(root: &Path, minecraft: Option<&Path>, log: Log) {
     optional_imports(
-        Assets::load(root, None, minecraft, &Inputs::default(), log)
+        Assets::load(root, None, minecraft, &Inputs::default(), None, log)
             .as_mut()
             .map_err(|e| e.as_str()),
         log,
@@ -185,7 +185,7 @@ const UNIFONT: [&str; 2] = [
 /// Packs made to sit on Programmer Art, like Golden Days, show the default textures without it.
 /// Also usable on prepared resources without Java.
 pub fn packs(root: &Path, minecraft: Option<&Path>, log: Log) -> Result<PathBuf, String> {
-    add_assets("packs", root, None, minecraft, &Inputs::default(), log)
+    add_assets("packs", root, None, minecraft, &Inputs::default(), false, log)
 }
 
 /// The built-in packs `packs` copies, under the prepared resources' `assets`.
@@ -271,11 +271,12 @@ impl Assets {
         output: Option<&Path>,
         minecraft: Option<&Path>,
         inputs: &Inputs,
+        fetch: Option<crate::fetch::Fetch>,
         log: Log,
     ) -> Result<Self, String> {
         let lock = Lock::read(root)?;
         let files = artifacts::game_files(minecraft, &lock.version).with(inputs, &lock.version);
-        let manifest = artifacts::import_manifest(&lock, &files)?;
+        let manifest = artifacts::import_manifest(&lock, &files, fetch.as_ref(), log)?;
         let target = crate::resources_dir(root, &lock.version, output);
         let (store, index, bytes) = launcher_assets(
             &lock,
@@ -298,6 +299,7 @@ impl Assets {
             target,
             objects,
             verified: HashSet::new(),
+            fetch,
         })
     }
 
@@ -377,7 +379,7 @@ fn copy_indexed(
                 if let Some(fetch) = &assets.fetch {
                     fetch.object(hash, size, &source, log)?;
                 }
-        }
+            }
         let destination = assets.target.join("assets").join(relative);
         let import = crate::files::Import::stage(
             &source,
@@ -625,6 +627,7 @@ mod tests {
             None,
             Some(&empty),
             &only_json,
+            false,
             &|_| {}
         )
         .is_err());
@@ -634,7 +637,7 @@ mod tests {
             ..Default::default()
         };
         let target =
-            add_assets("languages", &f.root, None, Some(&empty), &inputs, &|_| {}).unwrap();
+            add_assets("languages", &f.root, None, Some(&empty), &inputs, false, &|_| {}).unwrap();
         assert!(fs::read(target.join("assets/pack.mcmeta"))
             .unwrap()
             .starts_with(b"{\"language\""));
@@ -761,6 +764,8 @@ mod tests {
             artifacts::import_manifest(
                 &Lock::read(&f.root).unwrap(),
                 &artifacts::game_files(Some(&f.minecraft), "9.9"),
+                None,
+                &|_| {},
             )
             .unwrap();
             let target = f.root.join(".local/horizon-client/9.9/assets");
@@ -914,6 +919,7 @@ mod tests {
             None,
             Some(&f.minecraft),
             &Inputs::default(),
+            None,
             &|_| {},
         )
         .unwrap();
@@ -985,6 +991,7 @@ mod tests {
                 None,
                 Some(&f.minecraft),
                 &Inputs::default(),
+                None,
                 &|_| {},
             )
             .unwrap();
