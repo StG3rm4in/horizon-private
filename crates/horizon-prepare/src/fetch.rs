@@ -216,7 +216,7 @@ impl Fetch {
                 log(&format!("Retrying {url} after {failure}"));
                 std::thread::sleep(Duration::from_secs(1 << (attempt - 2)));
             }
-            match self.attempt(url, checksum, algorithm, size, &partial, log) {
+            match self.attempt(url, checksum, algorithm, size, &partial, attempt == 1, log) {
                 Ok(()) => {
                     fs::create_dir_all(destination.parent().unwrap())
                         .map_err(|e| format!("{}: {e}", destination.display()))?;
@@ -241,6 +241,7 @@ impl Fetch {
         algorithm: &str,
         size: u64,
         partial: &Path,
+        back_off: bool,
         log: Log,
     ) -> Result<(), String> {
         let error = |e: std::io::Error| format!("{}: {e}", partial.display());
@@ -254,8 +255,9 @@ impl Fetch {
         if offset > size {
             file.set_len(0).map_err(error)?;
             offset = 0;
-        } else if offset > 0 {
-            // A crash can leave the last byte half-written: fetch it again rather than trust it.
+        } else if back_off && offset > 0 {
+            // A partial from before this call can end in a half-written byte: fetch it again.
+            // Within this call, the bytes are the ones just written, so no back-off.
             offset -= 1;
             file.set_len(offset).map_err(error)?;
         }
