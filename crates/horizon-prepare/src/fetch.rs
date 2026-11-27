@@ -91,7 +91,7 @@ fn proxy_from_environment() -> Option<ureq::Proxy> {
 
 /// The HTTPS side: one agent for every file a preparation needs.
 #[derive(Clone)]
-pub(crate) struct Fetch {
+pub struct Fetch {
     cache: PathBuf,
     meta: String,
     objects: String,
@@ -108,7 +108,7 @@ impl Fetch {
         }
     }
 
-    pub(crate) fn new(root: &Path) -> Self {
+    pub fn new(root: &Path) -> Self {
         let base = |name: &str, default: &str| {
             std::env::var(name)
                 .ok()
