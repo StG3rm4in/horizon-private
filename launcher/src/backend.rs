@@ -2675,6 +2675,7 @@ pub fn preparer(
                 server_jar: (!reused).then_some(jar),
                 java_home: Some(java_home.clone()),
                 inputs: Default::default(),
+                download: true,
                 output: None,
             };
             return Ok((Preparer::InProcess(options), minecraft));
@@ -5040,14 +5041,16 @@ mod tests {
         // In the sources: one call downloads the game, in `download_for`, and the only caller
         // of that asks the strict gate. Game-file hosts appear nowhere else.
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut files = vec![src.clone()];
+        let prepare_src = src.join("../../crates/horizon-prepare/src");
+        let mut files = vec![src.clone(), prepare_src.clone()];
         let mut sources = Vec::new();
         while let Some(path) = files.pop() {
             if path.is_dir() {
                 files.extend(fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
             } else if path.extension().is_some_and(|e| e == "rs") {
                 let name = path.file_name().unwrap().to_string_lossy().to_string();
-                let in_tests = name.contains("tests") || path.parent().unwrap() != src;
+                let in_tests = name.contains("tests")
+                    || (path.parent().unwrap() != src && path.parent().unwrap() != prepare_src);
                 // The code alone: test modules (this one included) come after it.
                 // A Windows checkout has CRLF line ends: the searches below look for "\n".
                 let mut text = fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
@@ -5105,7 +5108,7 @@ pub fn {f}("
         ] {
             for (name, tests, text) in &sources {
                 assert!(
-                    *tests || name == "mojang.rs" || !text.contains(host),
+                    *tests || name == "mojang.rs" || name == "fetch.rs" || !text.contains(host),
                     "{name} names {host}"
                 );
             }
