@@ -239,6 +239,62 @@ impl Launcher {
         }
     }
 
+    /// Explicit, per-download consent; closing the prompt does not start any work.
+    pub(crate) fn ask_asset_download(
+        &mut self,
+        tag: String,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let answer = window.prompt(
+            gpui::PromptLevel::Warning,
+            tr("Download Minecraft assets from Mojang?"),
+            Some(tr("Downloads missing external resources such as sounds and languages to Horizon's local cache. A Minecraft account is not required for this download. You still need a license to use the resources and to play Minecraft. No game jar is downloaded.")),
+            &[tr("Cancel"), tr("Download assets")],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if matches!(answer.await, Ok(1)) {
+                let _ = this.update(cx, |this, cx| {
+                    this.start_asset_download(tag);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn start_asset_download(&mut self, tag: String) {
+        if self.preparing
+            || self.client.is_some()
+            || self.starting_client.is_some()
+            || self.installing.is_some()
+            || self.native_step.is_some()
+            || !self.removing.is_empty()
+            || !self.version_still_installed(&tag)
+        {
+            return;
+        }
+        self.preparing = true;
+        self.asset_download = true;
+        self.asset_notice = None;
+        self.prepare_tag = Some(tag.clone());
+        self.prepare_log.clear();
+        self.prepare_error = None;
+        self.prepare_fix = None;
+        self.prepare_started = Some(Instant::now());
+        self.download_seen = None;
+        horizon_launcher::mojang::CANCEL.store(false, Ordering::Relaxed);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let log = |line| {
+                let _ = tx.send(Msg::Line(Job::Prepare, line));
+            };
+            let result = backend::download_indexed_assets(&tag, &log);
+            let _ = tx.send(Msg::Exit(Job::Prepare, result));
+        });
+    }
+
     /// Whether `tag`, and the version whose files it prepares (a native build's base), are still
     /// installed. The window reads the list once and a player may delete `versions` while it is
     /// open: then the list is read again, the selection moves as after a removal, and Home says

@@ -429,6 +429,9 @@ impl Launcher {
             page = page.child(self.crash_notice(crash, cx));
         }
         page = page.children(self.api_notice(cx));
+        if java.is_none() {
+            page = page.child(self.indexed_assets_row(&tag, cx));
+        }
         page = if t.glass {
             // What Play still needs (and an open export or launch panel), above the tabs.
             page.child(rows).child(self.glass_home_tabs(cx))
@@ -439,6 +442,42 @@ impl Launcher {
             page = page.child(notice(e, &t));
         }
         page
+    }
+
+    /// Available without signing in, in either look, and never starts a game.
+    fn indexed_assets_row(&self, tag: &str, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let tag = tag.to_owned();
+        let blocked = self.preparing
+            || self.installing.is_some()
+            || self.client.is_some()
+            || self.starting_client.is_some()
+            || self.native_step.is_some();
+        let download = button("indexed-assets-download", "Download assets", Kind::Secondary, &t);
+        let action = if self.asset_download {
+            button("indexed-assets-cancel", "Cancel", Kind::Ghost, &t).on_click(|_, _, _| {
+                horizon_launcher::mojang::CANCEL.store(true, Ordering::Relaxed);
+            })
+        } else if blocked {
+            disabled(download)
+        } else {
+            download.on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.ask_asset_download(tag.clone(), window, cx);
+            }))
+        };
+        index_row(
+            7,
+            tr("Minecraft assets"),
+            Some(
+                div()
+                    .child(self.asset_notice.clone().unwrap_or_else(|| {
+                        tr("Fetch external resources from Mojang without signing in.").to_owned()
+                    }))
+                    .into_any_element(),
+            ),
+            Some(action.into_any_element()),
+            &t,
+        )
     }
 
     /// The last preparation's error, with what can be done about it: Reinstall a version deleted

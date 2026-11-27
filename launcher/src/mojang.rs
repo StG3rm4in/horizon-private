@@ -142,15 +142,7 @@ fn download_with(
     log(format!(
         "Downloading Minecraft {v} from Mojang: the game and {libraries} libraries"
     ));
-    let index = &manifest["assetIndex"];
-    let index = File {
-        url: text(index, "url")?,
-        sha1: text(index, "sha1")?,
-        size: index["size"].as_u64(),
-        path: dir
-            .join("assets/indexes")
-            .join(relative(&format!("{}.json", text(index, "id")?))?),
-    };
+    let index = asset_index(&manifest, dir)?;
     if let Some(http) = http {
         let discovered = crate::downloads::run(http.download(&index, cancel))
             .and_then(|_| objects(&read_json(&index.path)?, dir));
@@ -200,6 +192,109 @@ fn download_with(
         Ok(()) => {}
     }
     Ok(())
+}
+
+/// The external assets alone: no client jar, libraries, server jar or Java runtime.
+/// The caller is responsible for asking for consent before starting the job.
+pub(crate) fn download_indexed_assets(
+    pins: &Pins,
+    dir: &Path,
+    local: &[PathBuf],
+    fetch: Fetch,
+    cancel: &AtomicBool,
+    log: &dyn Fn(String),
+) -> Result<(), String> {
+    let http = crate::downloads::shared()?.session();
+    download_indexed_assets_with(Some(&http), pins, dir, local, fetch, cancel, log)
+}
+
+fn asset_index(manifest: &Value, dir: &Path) -> Result<File, String> {
+    let index = &manifest["assetIndex"];
+    Ok(File {
+        url: text(index, "url")?,
+        sha1: text(index, "sha1")?,
+        size: index["size"].as_u64(),
+        path: dir
+            .join("assets/indexes")
+            .join(relative(&format!("{}.json", text(index, "id")?))?),
+    })
+}
+
+// Copy only verified bytes from another launcher's store; never modify that store.
+fn reuse_local_asset(file: &File, dir: &Path, local: &[PathBuf]) -> Result<(), String> {
+    let valid = |path: &Path| {
+        file.size.is_none_or(|size| fs::metadata(path).is_ok_and(|m| m.len() == size))
+            && sha1_file(path).as_ref() == Some(&file.sha1)
+    };
+    if valid(&file.path) {
+        return Ok(());
+    }
+    let relative = file.path.strip_prefix(dir).map_err(|e| e.to_string())?;
+    for folder in local {
+        let candidate = folder.join(relative);
+        if !valid(&candidate) {
+            continue;
+        }
+        let Ok(bytes) = fs::read(&candidate) else {
+            continue;
+        };
+        // Recheck the actual bytes in case the source changed while it was read.
+        if file.size.is_some_and(|size| size != bytes.len() as u64)
+            || sha1_hex(&bytes) != file.sha1
+        {
+            continue;
+        }
+        let parent = file.path.parent().ok_or("Asset has no parent directory")?;
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+        std::io::Write::write_all(&mut temporary, &bytes).map_err(|e| e.to_string())?;
+        temporary.persist(&file.path).map_err(|e| e.to_string())?;
+        break;
+    }
+    Ok(())
+}
+
+fn download_indexed_assets_with(
+    http: Option<&crate::downloads::Downloader>,
+    pins: &Pins,
+    dir: &Path,
+    local: &[PathBuf],
+    fetch: Fetch,
+    cancel: &AtomicBool,
+    log: &dyn Fn(String),
+) -> Result<(), String> {
+    let check_cancel = || {
+        if cancel.load(Relaxed) {
+            Err(CANCELLED.to_string())
+        } else {
+            Ok(())
+        }
+    };
+    check_cancel()?;
+    let manifest = dir
+        .join("versions")
+        .join(&pins.version)
+        .join(format!("{}.json", pins.version));
+    fetch_manifest(pins, &manifest, fetch, log)?;
+    check_cancel()?;
+    let index = asset_index(&read_json(&manifest)?, dir)?;
+    reuse_local_asset(&index, dir, local)?;
+    match http {
+        Some(http) => crate::downloads::run(http.download(&index, cancel))?,
+        None => fetch_all(std::slice::from_ref(&index), 1, fetch, cancel, log)?,
+    }
+    let objects = objects(&read_json(&index.path)?, dir)?;
+    log(format!("Checking {} indexed Minecraft assets", objects.len()));
+    for object in &objects {
+        check_cancel()?;
+        reuse_local_asset(object, dir, local)?;
+    }
+    check_cancel()?;
+    match http {
+        Some(http) => crate::downloads::run(http.install(&[], &objects, cancel, log))??,
+        None => fetch_each(&objects, JOBS, fetch, cancel, log, false)?,
+    }
+    check_cancel()
 }
 
 /// Mojang's name for this system in its Java runtime index.
