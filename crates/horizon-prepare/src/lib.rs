@@ -111,8 +111,8 @@ pub struct Options {
     /// Files named one by one instead of found in `minecraft_dir` (`--version-json`,
     /// `--client-jar`, `--libraries-dir`, `--assets-dir`).
     pub inputs: artifacts::Inputs,
-        /// The Mojang downloads, when `--no-download` was not passed: None otherwise.
-        fetch: Option<fetch::Fetch>,
+    /// Fetch the pinned files the player's copy lacks from Mojang (`--no-download` turns it off).
+    pub download: bool,
     /// Fetch the pinned files the player's copy lacks from Mojang (`--no-download` turns it off).
     pub download: bool,
     /// Where the resources go (`--output`); None for `root`'s `.local/horizon-client/<version>`.
@@ -475,6 +475,8 @@ struct Run<'a> {
     /// Tells the caller's thread that a lane opened a stage of `steps`: it counts them.
     stage: &'a (dyn Fn() + Sync),
     inputs: artifacts::Inputs,
+    /// The Mojang downloads, when `--no-download` was not passed: None otherwise.
+    fetch: Option<fetch::Fetch>,
 }
 
 const PARITY: &str = "mods/horizon/src/test/java/dev/horizonlab/parity";
@@ -751,7 +753,6 @@ fn prepare_impl(
                 stage: &stage,
                 inputs: options.inputs.clone(),
                 fetch,
-            };
             };
             if compile_only {
                 return run.bundle();
