@@ -375,11 +375,11 @@ fn copy_indexed(
         let relative = artifacts::safe_relative(name)
             .ok_or_else(|| format!("Unsafe asset name {name:?} in the asset index"))?;
         let source = object_path(&assets.store, hash)?;
-            if !source.is_file() {
-                if let Some(fetch) = &assets.fetch {
-                    fetch.object(hash, size, &source, log)?;
+                if !source.is_file() {
+                    if let Some(fetch) = &assets.fetch {
+                        fetch.object(hash, size, &source, log)?;
+                    }
                 }
-            }
         let destination = assets.target.join("assets").join(relative);
         let import = crate::files::Import::stage(
             &source,
