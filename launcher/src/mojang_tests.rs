@@ -607,3 +607,56 @@ fn a_download_goes_on_past_an_asset_that_keeps_failing() {
     assert!(last.contains("1 of 2 files failed"), "{last}");
     fs::remove_dir_all(&dir).unwrap();
 }
+
+
+// The unauthenticated path reads only the pinned manifest, index and external objects.
+#[test]
+fn indexed_assets_reuse_local_files_and_never_request_game_jars() {
+    let (pins, files) = mojang();
+    let server = Server {
+        files,
+        asked: Mutex::new(Vec::new()),
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let local = tempfile::tempdir().unwrap();
+    let hash = sha1_hex(SOUND);
+    let relative = PathBuf::from("assets/objects").join(&hash[..2]).join(&hash);
+    write_file(&local.path().join(&relative), SOUND).unwrap();
+    let fetch = |url: &str| server.fetch(url);
+    let log = |_: String| {};
+    let folders = [local.path().to_path_buf()];
+    download_indexed_assets_with(None, &pins, dir.path(), &folders, &fetch, &GO, &log)
+        .unwrap();
+    assert_eq!(fs::read(dir.path().join(&relative)).unwrap(), SOUND);
+    assert!(dir.path().join("assets/indexes/34.json").is_file());
+    assert!(!dir.path().join("versions/26.3/26.3.jar").exists());
+    assert!(!dir.path().join("libraries").exists());
+    let asked = server.asked();
+    assert_eq!(asked.len(), 3, "{asked:?}");
+    assert!(asked.iter().all(|url| !url.ends_with(".jar")));
+    assert!(!asked.iter().any(|url| url.ends_with(&hash)));
+
+    // A second run keeps verified cached files.
+    download_indexed_assets_with(None, &pins, dir.path(), &folders, &fetch, &GO, &log)
+        .unwrap();
+    assert!(server.asked().is_empty());
+
+    // A corrupt local and cached object must be replaced by the verified download.
+    write_file(&local.path().join(&relative), b"bad").unwrap();
+    write_file(&dir.path().join(&relative), b"bad").unwrap();
+    download_indexed_assets_with(None, &pins, dir.path(), &folders, &fetch, &GO, &log)
+        .unwrap();
+    assert_eq!(fs::read(dir.path().join(&relative)).unwrap(), SOUND);
+    assert_eq!(fs::read(local.path().join(&relative)).unwrap(), b"bad");
+    assert_eq!(server.asked(), vec![format!("{OBJECTS}/{}/{hash}", &hash[..2])]);
+
+    // Cancellation before starting must not request even the manifest.
+    let cancelled = AtomicBool::new(true);
+    assert_eq!(
+        download_indexed_assets_with(
+            None, &pins, dir.path(), &folders, &fetch, &cancelled, &log,
+        ),
+        Err(CANCELLED.into())
+    );
+    assert!(server.asked().is_empty());
+}

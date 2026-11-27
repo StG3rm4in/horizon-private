@@ -201,6 +201,8 @@ impl Launcher {
             settings_save_error: migration_error,
             links: backend::Links::default(),
             preparing: false,
+            asset_download: false,
+            asset_notice: None,
             prepare_log: VecDeque::new(),
             log_revision: 0,
             prepare_error: None,

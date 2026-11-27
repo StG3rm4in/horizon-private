@@ -436,6 +436,19 @@ impl Launcher {
                         Job::Prepare => {
                             self.preparing = false;
                             let tag = self.prepare_tag.take();
+                            if std::mem::take(&mut self.asset_download) {
+                                self.prepare_started = None;
+                                self.prepare_fix = None;
+                                self.prepare_error = error;
+                                if self.prepare_error.is_none() {
+                                    self.asset_notice = Some(
+                                        tr("Minecraft assets downloaded to the local cache.").to_owned(),
+                                    );
+                                }
+                                self.start_next_install();
+                                self.native_look_again(None, None);
+                                continue;
+                            }
                             let error =
                                 prepare_outcome(error, tag.as_deref(), backend::check_prepared);
                             // A Play waiting for this preparation starts below once nothing

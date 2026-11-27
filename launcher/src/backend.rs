@@ -2007,6 +2007,33 @@ pub fn complete_assets(tag: &str) {
     });
 }
 
+/// Prefetch external resources independently of the full, owner-gated Minecraft download.
+/// Only call after the player explicitly accepts the asset-only download.
+pub fn download_indexed_assets(tag: &str, log: &dyn Fn(String)) -> Result<(), String> {
+    let tag = prepared_in(tag);
+    if !is_installed(&tag) {
+        return Err(version_gone(&tag));
+    }
+    set_prepare_step(PrepareStep::Files);
+    let pins = read_json(&version_dir(&tag).join("research-lock.json"))
+        .and_then(|lock| sources::Pins::read(&lock))
+        .ok_or("The version's research-lock.json doesn't pin the Minecraft files")?;
+    let own = data_dir().join("minecraft");
+    mojang::download_indexed_assets(
+        &pins,
+        &own,
+        &minecraft_folders(),
+        &crate::downloads::install_metadata,
+        &mojang::CANCEL,
+        log,
+    )?;
+    // The player may already have prepared the game without sounds or languages.
+    // Retry even if startup tried before these files existed.
+    complete_assets_in_with_retry(&versions_dir(), &tag, minecraft_folders, log, true);
+    forget_prepared();
+    Ok(())
+}
+
 fn should_refill_own_store(own: &Path, resources: &Path) -> bool {
     own.join("assets/indexes").is_dir() && !prepare::missing_extras(resources).is_empty()
 }
@@ -2020,9 +2047,7 @@ fn refill_own_store(tag: &str) {
     static ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let own = data_dir().join("minecraft");
     let resources = resources_at(&versions_dir().join(tag));
-    if !should_refill_own_store(&own, &resources)
-        || ASKED.swap(true, std::sync::atomic::Ordering::Relaxed)
-    {
+    if !should_refill_own_store(&own, &resources) {
         return;
     }
     let Some(pins) = read_json(&version_dir(tag).join("research-lock.json"))
@@ -2030,6 +2055,13 @@ fn refill_own_store(tag: &str) {
     else {
         return;
     };
+    // An asset-only cache is not an interrupted full game installation. Do not
+    // turn that explicit, limited download into a full download on startup.
+    if !own.join("versions").join(&pins.version).join(format!("{}.jar", pins.version)).is_file()
+        || ASKED.swap(true, std::sync::atomic::Ordering::Relaxed)
+    {
+        return;
+    }
     let fetch = crate::downloads::install_metadata;
     if let Err(e) = download_for_owner(&pins, &own, &fetch, &|line| eprintln!("{line}")) {
         eprintln!("{tag}: the missing assets were not downloaded: {e}");
@@ -2042,6 +2074,16 @@ fn complete_assets_in(
     tag: &str,
     folders: impl Fn() -> Vec<PathBuf>,
     log: &dyn Fn(String),
+) {
+    complete_assets_in_with_retry(versions, tag, folders, log, false);
+}
+
+fn complete_assets_in_with_retry(
+    versions: &Path,
+    tag: &str,
+    folders: impl Fn() -> Vec<PathBuf>,
+    log: &dyn Fn(String),
+    retry: bool,
 ) {
     // The versions tried this run. Held while copying: the start, an install and Play can
     // complete the same version at once, and the copies' temporary names are per process.
@@ -2063,10 +2105,12 @@ fn complete_assets_in(
     }
     let mut tried = TRIED.lock().unwrap_or_else(|e| e.into_inner());
     let to_add = lacking();
-    if tried.contains(&root) || to_add.is_empty() {
+    if (!retry && tried.contains(&root)) || to_add.is_empty() {
         return;
     }
-    tried.push(root.clone());
+    if !tried.contains(&root) {
+        tried.push(root.clone());
+    }
     let folders = folders();
     let lacked = to_add.len();
     for (what, _, copy) in to_add {

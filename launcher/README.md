@@ -55,6 +55,12 @@ The opening, then Play ([clip](docs/opening.webm)):
   starts the game. With no install on the computer the Play page offers the download alone and the
   Minecraft folder row says none is needed. Without an owner,
   the Play page asks to sign in first. `horizon-launcher prepare --download`.
+- **Download assets**: on Home for an installed Horizon build, confirm the asset-only download
+  to cache external indexed resources (such as sounds and languages) from Mojang without signing in.
+  Existing verified local assets are reused first; remaining objects are checked against the pinned
+  index and kept for the next attempt if cancelled. This does not download the game jar, libraries
+  or Java, grant a Minecraft license, or change the account checks for Play or full preparation.
+  Minecraft resources remain Mojang's property; use them only as permitted by their license.
 - **Mods**: tabs for Mods, Modpacks, Resource packs, Shader packs and Data packs. Mods, Modpacks,
   Resource packs and Data packs (into the world picked there) search Horizon's own registry, with
   its categories as filters, or Modrinth (CurseForge support is coming soon); Shader packs search

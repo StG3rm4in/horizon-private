@@ -461,6 +461,8 @@ struct Launcher {
     /// The Discord, sponsor and website links: built in until links.json on main has been read.
     links: backend::Links,
     preparing: bool,
+    asset_download: bool,
+    asset_notice: Option<String>,
     prepare_log: VecDeque<String>,
     /// Lines received from the game and the preparer since the launcher started: it only grows,
     /// so it moves when a line arrives even while `prepare_log` is full and its length stays.

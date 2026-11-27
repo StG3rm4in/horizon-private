@@ -482,6 +482,13 @@ impl Launcher {
         let now = backend::prepare_step();
         let download = download_progress();
         let doing = match (download, now) {
+            (Some((done, total)), _) if self.asset_download => trf(
+                "Downloading Minecraft assets · {done} of {total} files",
+                &[
+                    ("done", &thousands(done as u64)),
+                    ("total", &thousands(total as u64)),
+                ],
+            ),
             (Some((done, total)), backend::PrepareStep::Files) => trf(
                 "Downloading Minecraft {version} from Mojang · {done} of {total} files",
                 &[
@@ -570,7 +577,11 @@ impl Launcher {
                     .children(
                         backend::PrepareStep::ALL
                             .iter()
-                            .map(|s| pill(s.name(), s.cmp(&now))),
+                            .filter(|s| !self.asset_download || **s == backend::PrepareStep::Files)
+                            .map(|s| {
+                                let name = if self.asset_download { "Minecraft assets" } else { s.name() };
+                                pill(name, s.cmp(&now))
+                            }),
                     )
                     .children(play.then(|| pill("Play", std::cmp::Ordering::Greater))),
             )
