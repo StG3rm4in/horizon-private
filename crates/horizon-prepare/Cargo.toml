@@ -14,7 +14,15 @@ crc32fast = "1"
 regex = { version = "1", default-features = false, features = ["std", "unicode-perl"] }
 sha1 = "0.10"
 sha2 = "0.10"
+ureq = { version = "3", default-features = false, features = ["rustls"], optional = true }
 zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
+
+[features]
+default = ["download"]
+download = ["dep:ureq"]
+
+[dev-dependencies]
+tiny_http = "0.12"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 libc = "0.2"
