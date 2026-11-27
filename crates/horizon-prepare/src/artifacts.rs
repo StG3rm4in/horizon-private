@@ -1254,18 +1254,23 @@ pub fn import(
         ));
     }
     let hint = files.hint(&lock.version);
-    let client_libraries = crate::pool::map(&imports, |(source, destination, sha1, size, url)| {
-        import_pinned(
-            source,
-            destination,
-            sha1,
-            *size,
-            url.as_deref(),
-            fetch,
-            &hint,
-            log,
-        )
-    })?;
+    // One file at a time: `log` is a plain `&dyn Fn`, which is not `Sync`, so the copies cannot
+    // share the pool's threads. The asset copies are sequential for the same reason.
+    let client_libraries = imports
+        .iter()
+        .map(|(source, destination, sha1, size, url)| {
+            import_pinned(
+                source,
+                destination,
+                sha1,
+                *size,
+                url.as_deref(),
+                fetch,
+                &hint,
+                log,
+            )
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     // Prism Launcher never downloads the server jar. Its client jar contains every server class
     // (and Prism's libraries are a superset of the server bundle's), so the client jar is the
     // server side of exporters and the data generator instead.
