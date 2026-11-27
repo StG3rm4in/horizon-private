@@ -112,9 +112,28 @@ pub struct Options {
     /// Files named one by one instead of found in `minecraft_dir` (`--version-json`,
     /// `--client-jar`, `--libraries-dir`, `--assets-dir`).
     pub inputs: artifacts::Inputs,
+    /// Fetch the pinned files the player's copy lacks from Mojang (`--no-download` turns it off).
+    pub download: bool,
     /// Where the resources go (`--output`); None for `root`'s `.local/horizon-client/<version>`.
     /// The exporters' scratch files stay in `root`'s `.local/` either way.
     pub output: Option<PathBuf>,
+}
+impl Default for Options {
+    /// Every field but `root` has a right default; `root` is the working folder. Written out
+    /// rather than derived, so a new field is a compile error here, beside its policy, instead of
+    /// a silent `false` at every construction site.
+    fn default() -> Self {
+        Self {
+            root: PathBuf::from("."),
+            import: false,
+            minecraft_dir: None,
+            server_jar: None,
+            java_home: None,
+            inputs: Default::default(),
+            download: true,
+            output: None,
+        }
+    }
 }
 
 /// The prepared resources' folder: `output`, else `root`'s `.local/horizon-client/<version>`.
@@ -206,7 +225,7 @@ pub(crate) fn hold_lock(dir: &Path, log: Log) -> Result<PreparationLock, String>
 }
 
 /// Whether two folders are one, through `..`, links and case; a missing folder is created first.
-fn same_dir(a: &Path, b: &Path) -> Result<bool, String> {
+pub(crate) fn same_dir(a: &Path, b: &Path) -> Result<bool, String> {
     let real = |dir: &Path| {
         mkdir(dir)?;
         fs::canonicalize(dir).map_err(|e| format!("{}: {e}", dir.display()))
@@ -640,6 +659,10 @@ fn prepare_impl(
     let jdk = java::find_runtime(lock.java_major, &homes)?;
     // The import and the exporters' scratch files.
     let _local_lock = hold_lock(&root.join(".local"), log)?;
+    #[cfg(feature = "download")]
+    let fetch = options.download.then(|| fetch::Fetch::new(root));
+    #[cfg(not(feature = "download"))]
+    let fetch = None;
     let reused = if options.import && options.inputs.official_local.is_none() {
         artifacts::reuse_verified(root, log)?
     } else {
@@ -655,6 +678,7 @@ fn prepare_impl(
                     options.minecraft_dir.as_deref(),
                     &options.inputs,
                     options.server_jar.as_deref(),
+                    fetch.as_ref(),
                     log,
                 )?;
             }
