@@ -1170,6 +1170,7 @@ pub fn import(
     minecraft: Option<&Path>,
     inputs: &Inputs,
     server_jar: Option<&Path>,
+    fetch: Option<&crate::fetch::Fetch>,
     log: Log,
 ) -> Result<(), String> {
     let files = game_files(minecraft, &lock.version).with(inputs, &lock.version);
