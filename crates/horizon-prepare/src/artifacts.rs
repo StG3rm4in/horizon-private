@@ -557,6 +557,25 @@ pub(crate) fn import_copy(
         })?
         .commit()
 }
+/// Copies the player's copy of a pinned file, or fetches it when the copy is absent and
+/// downloading is on.
+#[allow(clippy::too_many_arguments)]
+fn import_pinned(
+    source: &Path,
+    destination: &Path,
+    checksum: &str,
+    size: Option<u64>,
+    url: Option<&str>,
+    fetch: Option<&crate::fetch::Fetch>,
+    hint: &str,
+    log: Log,
+) -> Result<PathBuf, String> {
+    if let (Some(fetch), false, Some(url), Some(size)) = (fetch, source.is_file(), url, size) {
+        fetch.file(url, checksum, "sha1", size, destination, log)?;
+        return Ok(destination.to_path_buf());
+    }
+    import_copy(source, destination, checksum, "sha1", hint)
+}
 
 /// Whether a version file is a Prism Launcher/MultiMC component rather than Mojang's JSON:
 /// it names the client jar as a Maven artifact (`mainJar`) and has no `downloads`.
@@ -729,7 +748,12 @@ fn normalize_prism_manifest(lock: &Lock, files: &GameFiles, mut manifest: Value)
 
 /// The pinned version JSON from the launcher's install. The launcher's copy wins over the
 /// cached one so the manifest matches the asset index installed alongside it.
-pub(crate) fn import_manifest(lock: &Lock, files: &GameFiles) -> Result<Value, String> {
+pub(crate) fn import_manifest(
+    lock: &Lock,
+    files: &GameFiles,
+    fetch: Option<&crate::fetch::Fetch>,
+    log: Log,
+) -> Result<Value, String> {
     let version = &lock.version;
     let destination = lock.directory.join("manifest.json");
     let source = &files.manifest;
@@ -772,8 +796,15 @@ pub(crate) fn import_manifest(lock: &Lock, files: &GameFiles) -> Result<Value, S
             // Another launcher's rewrite of Mojang's file (HMCL and PCL add their own fields to
             // the same jars, #1772), or one Mojang republished: Mojang's own copy saved as the
             // imported one is used instead.
-            let pinned = lock.pin("manifest_sha1")?;
-            if !(destination.exists() && lock.manifest_accepted(&digest(&destination, "sha1")?)) {
+        let pinned = lock.pin("manifest_sha1")?;
+            if destination.exists() && lock.manifest_accepted(&digest(&destination, "sha1")?) {
+                // A previous run already saved Mojang's own copy.
+            } else if let Some(fetch) = fetch {
+                log(&format!("Fetching Mojang's own {version} version JSON"));
+                let url = fetch.manifest_url(pinned, version);
+                let data = fetch.bytes(&url, pinned, "sha1")?;
+                crate::write_if_changed(&destination, &data)?;
+            } else {
                 return Err(format!(
                     "{} is not a {version} version file Horizon knows (sha1 {checksum}): your \
                      launcher may have rewritten it, or Mojang republished it. Prepare from the \
@@ -788,12 +819,23 @@ pub(crate) fn import_manifest(lock: &Lock, files: &GameFiles) -> Result<Value, S
             fs::create_dir_all(&lock.directory).map_err(|e| e.to_string())?;
             fs::copy(source, &destination).map_err(|e| e.to_string())?;
         }
-    } else if !(destination.exists() && lock.manifest_accepted(&digest(&destination, "sha1")?)) {
-        return Err(format!(
-            "Missing {}. {}",
-            source.display(),
-            files.hint(version)
-        ));
+        } else if !(destination.exists() && lock.manifest_accepted(&digest(&destination, "sha1")?)) {
+        match fetch {
+            Some(fetch) => {
+                let pinned = lock.pin("manifest_sha1")?;
+                log(&format!("Fetching the pinned {version} version JSON"));
+                let url = fetch.manifest_url(pinned, version);
+                let data = fetch.bytes(&url, pinned, "sha1")?;
+                crate::write_if_changed(&destination, &data)?;
+            }
+            None => {
+                return Err(format!(
+                    "Missing {}. {}",
+                    source.display(),
+                    files.hint(version)
+                ))
+            }
+        }
     }
     let manifest = read_json(&destination)?;
     let java = manifest
@@ -811,6 +853,7 @@ pub(crate) fn import_manifest(lock: &Lock, files: &GameFiles) -> Result<Value, S
 fn import_server(
     lock: &Lock,
     server_jar: Option<&Path>,
+    fetch: Option<&crate::fetch::Fetch>,
     client_fallback: bool,
 ) -> Result<Option<PathBuf>, String> {
     let version = &lock.version;
@@ -1142,14 +1185,24 @@ pub fn import(
         ));
     }
     let manifest = import_manifest(lock, &files)?;
-    let client = import_copy(
+    let downloads = manifest.get("downloads");
+    let client = import_pinned(
         &files.client,
         &lock.directory.join("jars/client.jar"),
         lock.pin("client_sha1")?,
-        "sha1",
+        downloads
+            .and_then(|d| d.get("client"))
+            .and_then(|c| c.get("size"))
+            .and_then(Value::as_i64)
+            .and_then(|s| u64::try_from(s).ok()),
+        downloads
+            .and_then(|d| d.get("client"))
+            .and_then(|c| c.get("url"))
+            .and_then(Value::as_str),
+        fetch,
         &files.hint(&lock.version),
+        log,
     )?;
-    let downloads = manifest.get("downloads");
     if downloads.and_then(|d| d.get("client_mappings")).is_some()
         || downloads.and_then(|d| d.get("server_mappings")).is_some()
     {
@@ -1180,11 +1233,29 @@ pub fn import(
             ));
             continue;
         }
-        imports.push((source, destination, sha1));
+        imports.push((
+            source,
+            destination,
+            sha1.to_string(),
+            artifact
+                .get("size")
+                .and_then(Value::as_i64)
+                .and_then(|s| u64::try_from(s).ok()),
+            artifact.get("url").and_then(Value::as_str).map(str::to_owned),
+        ));
     }
     let hint = files.hint(&lock.version);
-    let client_libraries = crate::pool::map(&imports, |(source, destination, sha1)| {
-        import_copy(source, destination, sha1, "sha1", &hint)
+    let client_libraries = crate::pool::map(&imports, |(source, destination, sha1, size, url)| {
+        import_pinned(
+            source,
+            destination,
+            sha1,
+            *size,
+            url.as_deref(),
+            fetch,
+            &hint,
+            log,
+        )
     })?;
     // Prism Launcher never downloads the server jar. Its client jar contains every server class
     // (and Prism's libraries are a superset of the server bundle's), so the client jar is the
