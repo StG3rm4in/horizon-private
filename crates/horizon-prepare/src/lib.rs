@@ -113,8 +113,6 @@ pub struct Options {
     pub inputs: artifacts::Inputs,
     /// Fetch the pinned files the player's copy lacks from Mojang (`--no-download` turns it off).
     pub download: bool,
-    /// Fetch the pinned files the player's copy lacks from Mojang (`--no-download` turns it off).
-    pub download: bool,
     /// Where the resources go (`--output`); None for `root`'s `.local/horizon-client/<version>`.
     /// The exporters' scratch files stay in `root`'s `.local/` either way.
     pub output: Option<PathBuf>,
