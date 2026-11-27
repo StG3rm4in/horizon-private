@@ -17,7 +17,7 @@ horizon-prepare: prepare Horizon's resources from your own Minecraft Java Editio
 
 Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [--prism-dir PATH] [--root PATH] [--output PATH]
                        [--version-json PATH] [--client-jar PATH] [--libraries-dir PATH] [--assets-dir PATH]
-                       [--java-home PATH] [--complete] [--progress json]
+                       [--java-home PATH] [--complete] [--no-download] [--progress json] 
        horizon-prepare --check [--root PATH] [--output PATH]
        horizon-prepare --launch-api [--root PATH]
        horizon-prepare compile-exporters [--root PATH]
@@ -55,6 +55,9 @@ Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
                         prepare again)
   --complete            Also copy the sounds, then fail unless --check would pass: one command
                         for resources the game plays with nothing missing
+  --no-download         Fetch nothing from Mojang: only import and copy what your own copy has
+                        (by default the preparer fetches the pinned files it lacks, so a player
+                        without the game installed can prepare)
   --progress json       One JSON object a line on stdout: {\"message\": ...} for each log line,
                         {\"fraction\": F} as the work advances (0 to 1), {\"error\": ...} on failure
   --launch-api          Print what this preparer supports as JSON (the Launch API's version, the
@@ -132,6 +135,10 @@ let mut options = horizon_prepare::Options {
             }
             "--prepare" if inline.is_none() => {
                 options.import = true;
+                Ok(())
+            }
+            "--no-download" if inline.is_none() => {
+                options.download = false;
                 Ok(())
             }
             "--server-jar" => value("--server-jar").map(|v| options.server_jar = Some(v)),
@@ -214,9 +221,9 @@ let mut options = horizon_prepare::Options {
             );
             return ExitCode::from(2);
         }
-        if json || complete {
+        if json || complete || !options.download {
             eprintln!(
-                "horizon-prepare: error: --progress and --complete apply to preparing; leave them out with --check"
+                "horizon-prepare: error: --progress, --complete and --no-download apply to preparing; leave them out with --check"
             );
             return ExitCode::from(2);
         }
@@ -248,12 +255,13 @@ let mut options = horizon_prepare::Options {
                 options.output.as_deref(),
                 options.minecraft_dir.as_deref(),
                 &options.inputs,
+                options.download,
                 &log,
             )
         }
         _ => horizon_prepare::prepare_with_progress(&options, &log, &progress).and_then(
             |resources| match complete {
-                true => complete_resources(&options, resources, &log),
+                true => complete_resources(&options, resources, options.download, &log),
                 false => Ok(resources),
             },
         ),
@@ -288,6 +296,7 @@ fn complete_resources(
         Some(&resources),
         options.minecraft_dir.as_deref(),
         &options.inputs,
+        options.download,
         log,
     )?;
     let lacking = horizon_prepare::check(&options.root, &resources)?;
