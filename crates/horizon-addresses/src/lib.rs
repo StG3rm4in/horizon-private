@@ -81,6 +81,9 @@ pub const SHOP: &str = "https://playhorizon.dev/shop";
 /// The official launcher installer's product home.
 pub const LAUNCHER_ABOUT: &str = "https://playhorizon.dev";
 
+/// Ely.by authentication for Noelcraft.
+pub const ELY_AUTH: &str = "https://authserver.ely.by/auth";
+
 /// Cargo's canonical source identity for the crates.io registry.
 pub const CARGO_CRATES_IO_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
 

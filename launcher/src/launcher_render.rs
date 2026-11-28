@@ -56,6 +56,7 @@ impl Render for Launcher {
         self.args_focused = self.args_focus.is_focused(window);
         self.proxy_focused = self.proxy_focus.is_focused(window);
         self.settings_query_focused = self.settings_query_focus.is_focused(window);
+        self.ely_ui.note_focus(window);
         let size = window.viewport_size();
         self.window_width = f32::from(size.width);
         self.window_long_side = f32::from(size.width).max(f32::from(size.height));
@@ -235,6 +236,7 @@ impl Render for Launcher {
                     "escape" if this.native_log_escape() => {}
                     "escape" if this.servers_escape() => {}
                     "escape" if this.instance_escape() => {}
+                    "escape" if this.ely_ui.close_form() => {}
                     "escape" if this.settings_escape() => {}
                     "escape" if this.screenshot_escape() => {}
                     "left" if this.screenshot_step(false) => {}

@@ -3811,9 +3811,20 @@ fn launcher_asset_running_from(appimage: bool) -> Option<&'static str> {
     }
 }
 
-/// Development builds and `HORIZON_LAUNCHER_NO_SELF_UPDATE` never replace themselves.
+/// Development builds, builds made with `HORIZON_LAUNCHER_PINNED` set (a fork's own package, which an
+/// upstream release must not replace) and `HORIZON_LAUNCHER_NO_SELF_UPDATE` never replace themselves.
 pub fn self_update_allowed() -> bool {
-    !cfg!(debug_assertions) && std::env::var_os("HORIZON_LAUNCHER_NO_SELF_UPDATE").is_none()
+    !cfg!(debug_assertions)
+        && option_env!("HORIZON_LAUNCHER_PINNED").is_none()
+        && std::env::var_os("HORIZON_LAUNCHER_NO_SELF_UPDATE").is_none()
+}
+
+#[cfg(test)]
+#[test]
+fn a_pinned_build_never_replaces_itself() {
+    if option_env!("HORIZON_LAUNCHER_PINNED").is_some() {
+        assert!(!self_update_allowed());
+    }
 }
 
 /// The version in `horizon-launcher --version`'s output (`horizon-launcher 0.1.5`).

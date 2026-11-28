@@ -199,9 +199,12 @@ impl Hub {
             if !self.guests[i].views_level(&dimension) {
                 continue;
             }
-            if self.open_view(i, ctx) && self.update_viewed(i) {
-                self.send_view_batch(i, ctx.world, ctx.streaming, &mut bodies);
-                self.send_view_state(i, ctx.world, ctx.clock_rate);
+            if self.open_view(i, ctx) {
+                self.send_view_precipitation(i, ctx.world.force_snow);
+                if self.update_viewed(i) {
+                    self.send_view_batch(i, ctx.world, ctx.streaming, &mut bodies);
+                    self.send_view_state(i, ctx.world, ctx.clock_rate);
+                }
             }
             self.guests.update(i, |g| g.viewed.recount(&active));
         }
@@ -277,12 +280,38 @@ impl Hub {
             let mut view = View::new(level);
             view.weather = weather;
             view.clock = clock;
+            view.force_snow = g.is_horizon().then_some(ctx.world.force_snow);
             g.viewed.views.insert(dimension, view);
             let columns = caps.for_client(g.sender.viewed_levels).loaded_per_player;
             g.sender.send(viewed_levels::open(level, columns, &spawn));
+            if g.is_horizon() {
+                g.send(&horizon_protocol::level_precipitation::packet(
+                    &spawn.dimension,
+                    ctx.world.force_snow,
+                ));
+            }
             g.sender.send_many(runs.finish());
         });
         true
+    }
+
+    /// Publish a policy change before forgetting or sending any columns in this view pass.
+    fn send_view_precipitation(&mut self, i: usize, force: bool) {
+        let dimension = &self.config.dimension;
+        self.guests.update(i, |g| {
+            if !g.is_horizon() {
+                return;
+            }
+            let Some(view) = g.viewed.views.get_mut(dimension) else {
+                return;
+            };
+            if view.force_snow != Some(force) {
+                view.force_snow = Some(force);
+                g.send(&horizon_protocol::level_precipitation::packet(
+                    dimension, force,
+                ));
+            }
+        });
     }
 
     /// The next batch of the level in place guest `i` views: its ready columns nearest to an

@@ -750,10 +750,19 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         if self.level.dimension_type().water_evaporates {
             self.remove_block(pos, false);
         } else {
-            self.set_block_and_update(pos, target);
-            self.neighbor_changed_at(pos, b.named.water);
-            self.game_event_state(pos, "minecraft:block_destroy", state);
+            self.ice_melt_into_water(pos, state, target);
         }
+    }
+
+    pub(super) fn ice_melt_into_water(
+        &mut self,
+        pos: BlockPos,
+        state: BlockStateId,
+        target: BlockStateId,
+    ) {
+        self.set_block_and_update(pos, target);
+        self.neighbor_changed_at(pos, self.b.named.water);
+        self.game_event_state(pos, "minecraft:block_destroy", state);
     }
     /// `BigDripleafBlock.entityInside` on a server level: an entity standing on
     /// a flat leaf (`canEntityTilt`: on the ground, its feet above the leaf's

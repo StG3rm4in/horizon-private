@@ -218,6 +218,7 @@ impl Launcher {
             palette: None,
             toast_seen: None,
             accounts: Accounts::load(),
+            ely_ui: ely_gui::ElyUi::new(cx),
             auth_status: HashMap::new(),
             auth_progress: HashMap::new(),
             profile_heads: profile_heads::Heads::default(),
@@ -434,6 +435,9 @@ impl Launcher {
     }
 
     pub(crate) fn go(&mut self, page: Page) {
+        if page != Page::Settings {
+            self.ely_ui.close_form();
+        }
         // The CLI or another window may have changed the accounts: read them again (a small
         // file, once a switch).
         self.accounts = Accounts::load();

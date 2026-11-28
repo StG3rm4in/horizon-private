@@ -16,6 +16,7 @@ pub mod frame;
 pub mod hash_ops;
 pub mod ids;
 pub mod item;
+pub mod level_precipitation;
 pub mod menu_extra;
 pub mod mod_list;
 pub mod packets;

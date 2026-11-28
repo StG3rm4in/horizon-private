@@ -213,6 +213,7 @@ impl Launcher {
                     .flex_col()
                     .child(group("Account", "user").mt_0())
                     .child(accounts)
+                    .child(self.ely_account_card(cx))
                     .child(group("Updates", "reload"))
                     .child(index_row(n + 1, "Horizon", Some(plain(&horizon)), horizon_action, &t))
                     .child(index_row(
@@ -623,6 +624,7 @@ impl Launcher {
                             let mut accounts = Accounts::load();
                             accounts.selected = None;
                             if accounts.save().is_ok() {
+                                this.ely_ui.selected = false;
                                 this.accounts = accounts;
                             }
                             cx.notify();

@@ -475,6 +475,7 @@ pub struct Hub {
     /// The `tick_steps` count last broadcast.
     stepping: u32,
     weather: (bool, f32, f32),
+    force_snow: bool,
     /// The clock and weather last sent in the levels not in place, by
     /// dimension (`set_dimension` swaps them with the fields above).
     level_sync: std::collections::HashMap<String, LevelSync>,
@@ -802,6 +803,7 @@ struct LevelSync {
     last_rate: f32,
     last_level_clock: (i64, f32),
     weather: (bool, f32, f32),
+    force_snow: bool,
 }
 
 impl Default for LevelSync {
@@ -811,6 +813,7 @@ impl Default for LevelSync {
             last_rate: 0.0,
             last_level_clock: (i64::MIN, 0.0),
             weather: (false, 0.0, 0.0),
+            force_snow: false,
         }
     }
 }
@@ -872,6 +875,7 @@ impl Hub {
             command_spam_threshold: 0,
             admin_feedback_to_ops: true,
             weather: (false, 0.0, 0.0),
+            force_snow: false,
             level_sync: Default::default(),
             chat_type,
             dimension_type,
@@ -2288,6 +2292,12 @@ impl Hub {
         g.send(&C::InitializeBorder(super::border::initialize(ctx.border)));
         g.send(&self.time_packet(ctx.world, ctx.clock_rate));
         g.send(&self.default_spawn(ctx.spawn_dimension, spawn, ctx.spawn_angle));
+        if g.is_horizon() {
+            g.send(&horizon_protocol::level_precipitation::packet(
+                &self.config.dimension,
+                ctx.world.force_snow,
+            ));
+        }
         let w = &ctx.world.weather;
         if w.raining {
             g.send(&C::GameEvent(play::GameEvent {
@@ -2880,6 +2890,21 @@ impl Hub {
             None => self.last_level_clock = (i64::MIN, 0.0),
         }
         self.sync_ticking(ctx.tick_rate, ctx.tick_frozen, ctx.tick_steps);
+        if self.force_snow != world.force_snow {
+            let body = horizon_protocol::level_precipitation::packet(
+                &self.config.dimension,
+                world.force_snow,
+            )
+            .encode();
+            for g in self
+                .guests
+                .simulation_iter()
+                .filter(|g| self.watches(g) && g.is_horizon())
+            {
+                g.sender.send(body.clone());
+            }
+            self.force_snow = world.force_snow;
+        }
         let w = &world.weather;
         let (raining, rain, thunder) = self.weather;
         if w.raining != raining {
@@ -5408,6 +5433,7 @@ impl Hub {
             last_rate: self.last_rate,
             last_level_clock: self.last_level_clock,
             weather: self.weather,
+            force_snow: self.force_snow,
         };
         let entering = self.level_sync.remove(dimension).unwrap_or_default();
         self.level_sync
@@ -5417,11 +5443,13 @@ impl Hub {
             self.last_rate,
             self.last_level_clock,
             self.weather,
+            self.force_snow,
         ) = (
             entering.last_clock,
             entering.last_rate,
             entering.last_level_clock,
             entering.weather,
+            entering.force_snow,
         );
         self.config.dimension = dimension.to_owned();
         self.dimension_type = self

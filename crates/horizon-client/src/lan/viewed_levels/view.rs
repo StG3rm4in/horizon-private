@@ -25,6 +25,8 @@ pub struct View {
     pub dirty: bool,
     /// The weather last sent: raining, rain level, thunder level.
     pub weather: (bool, f32, f32),
+    /// The override last sent, if this view has sent its initial value.
+    pub(super) force_snow: Option<bool>,
     /// The clocks last sent (`send::Clock`), so that a jump or a new rate reaches the client.
     pub(super) clock: super::send::Clock,
     /// The areas' centres and radii, in chunks, as of the last requeue: where the view's client
@@ -43,6 +45,7 @@ impl View {
             linger: Default::default(),
             dirty: true,
             weather: (false, 0.0, 0.0),
+            force_snow: None,
             clock: Default::default(),
             sources: Vec::new(),
             tracker: Tracker::default(),

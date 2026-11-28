@@ -337,6 +337,10 @@ impl Launcher {
     }
 
     pub(crate) fn play(&mut self) {
+        if self.ely_ui.selected || self.ely_ui.playing {
+            self.play_ely();
+            return;
+        }
         let id = self
             .selected_instance()
             .map_or(instances::DEFAULT, |i| i.id.as_str());
@@ -452,7 +456,8 @@ impl Launcher {
     /// a start whose pre-launch command still runs owns the window's Stop (Windows), and the
     /// queued Play waits rather than taking the Stop over.
     pub(crate) fn start_queued_play(&mut self) {
-        let start_busy = self.preparing
+        let start_busy = self.ely_ui.playing
+            || self.preparing
             || self.pre_launch_stoppable()
             || self.starting_client.is_some()
             || self.client.is_some();
@@ -491,6 +496,9 @@ impl Launcher {
     /// Starts the game: the session first (a network round trip when the token needs
     /// renewing), then `drain` starts the process when it arrives.
     pub(crate) fn start_client(&mut self, tag: String, instance_id: Option<String>) {
+        if self.ely_ui.playing {
+            return;
+        }
         // If the migration could not save a pin, starting Latest could upgrade a held world.
         if !self.settings.instance_versions_migrated || !self.version_still_installed(&tag) {
             self.starting_pack = None;
