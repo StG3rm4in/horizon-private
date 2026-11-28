@@ -1,0 +1,4 @@
+# Prepared-resource daily tests for the live melt policy.
+horizon-client game::native_level_world::tests::force_melt_rejects_unavailable_handles lib daily resources
+horizon-client game::native_level_world::tests::force_melt_only_changes_eligible_sampled_surfaces lib daily resources
+horizon-client game::native_level_world::tests::force_melt_keeps_generated_columns_identical lib daily resources

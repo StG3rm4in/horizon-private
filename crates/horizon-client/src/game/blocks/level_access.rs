@@ -251,8 +251,17 @@ impl LevelAccess for GameLevel<'_> {
     }
     fn allow_block_form(&self, pos: BlockPos, from: BlockStateId, to: BlockStateId) -> bool {
         let mut cancel = false;
-        if self.native_authoritative {
+        if self.native_authoritative && mod_api::__private::listened(mod_api::HookId::BlockForm) {
             self.native_block_form(self.dimension, pos, from, to, &mut cancel);
+        }
+        !cancel
+    }
+    fn allow_block_freeze(&self, pos: BlockPos, from: BlockStateId, to: BlockStateId) -> bool {
+        let mut cancel = false;
+        if self.native_authoritative
+            && mod_api::__private::listened(mod_api::HookId::BlockShouldFreeze)
+        {
+            self.native_block_should_freeze(self.dimension, pos, from, to, &mut cancel);
         }
         !cancel
     }
@@ -740,6 +749,12 @@ impl LevelAccess for GameLevel<'_> {
     }
     fn world_surface(&self, x: i32, z: i32) -> i32 {
         self.world.world_surface(x, z, |s| self.facts.is_air(s))
+    }
+    fn force_snow(&self) -> bool {
+        self.world.force_snow
+    }
+    fn force_melt(&self) -> bool {
+        self.world.force_melt
     }
     fn precipitation(&self, pos: BlockPos) -> Option<horizon_world::level::Precipitation> {
         self.behaviours.precipitation_info(self, pos)

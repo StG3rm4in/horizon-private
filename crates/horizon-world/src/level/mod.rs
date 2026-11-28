@@ -567,6 +567,9 @@ pub trait LevelAccess: BlockEntityNeighbors {
     fn allow_block_form(&self, _pos: BlockPos, _from: BlockStateId, _to: BlockStateId) -> bool {
         true
     }
+    fn allow_block_freeze(&self, _pos: BlockPos, _from: BlockStateId, _to: BlockStateId) -> bool {
+        true
+    }
     /// Returns the new note, or None to cancel tuning. `instrument` is the
     /// block's index in `data::INSTRUMENTS`.
     fn note_block_change(
@@ -1257,6 +1260,12 @@ pub trait LevelAccess: BlockEntityNeighbors {
         _direction: Direction,
     ) -> i32 {
         0
+    }
+    fn force_snow(&self) -> bool {
+        false
+    }
+    fn force_melt(&self) -> bool {
+        false
     }
     /// Biome answers for a precipitation tick at the column of `pos` (see
     /// [`Precipitation`]); None skips snow/ice formation and cauldron filling.

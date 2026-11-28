@@ -1,0 +1,8 @@
+# Prepared-resource daily tests for the live precipitation override.
+horizon-client game::native_level_world::tests::forced_snow_preserves_live_precipitation_eligibility lib daily resources
+horizon-client game::native_level_world::tests::forced_snow_changes_live_tick_without_entering_an_unheard_hook lib daily resources
+horizon-client game::native_level_world::tests::freeze_listener_vetoes_ice_and_skips_snow_dispatch lib daily resources
+horizon-client game::native_level_world::tests::forced_snow_keeps_generated_columns_identical lib daily resources
+horizon-client game::viewed_worlds::switch::tests::level_precipitation_follows_current_and_viewed_worlds lib daily resources
+horizon-client-lib lan::viewed_levels::tests::level_precipitation_precedes_viewed_chunks lib daily resources
+horizon-client-lib lan::viewed_levels::tests::level_precipitation_precedes_own_chunks lib daily resources

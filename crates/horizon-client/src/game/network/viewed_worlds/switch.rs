@@ -102,6 +102,7 @@ impl Game<'_> {
             ..
         } = entered;
         self.world.weather = world.weather;
+        self.world.force_snow = world.force_snow;
         let mut columns: Vec<(i32, i32)> = world.chunks.keys().copied().collect();
         columns.sort_unstable();
         for key in &columns {
@@ -153,6 +154,40 @@ mod tests {
             spawn: spawn(dimension),
             keep,
         })
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn level_precipitation_follows_current_and_viewed_worlds() {
+        use horizon_protocol::level_precipitation::packet;
+
+        let mut resources = None;
+        let mut game = client(&mut resources);
+        assert!(!game.world.force_snow);
+        game.handle_packet(packet(OVERWORLD, true)).unwrap();
+        assert!(game.world.force_snow);
+
+        game.handle_packet(open(1, NETHER)).unwrap();
+        game.handle_packet(packet(NETHER, true)).unwrap();
+        assert!(viewed(&game, 1).unwrap().force_snow);
+        game.handle_packet(packet(OVERWORLD, false)).unwrap();
+        assert!(!game.world.force_snow);
+        assert!(viewed(&game, 1).unwrap().force_snow);
+
+        game.handle_packet(packet(OVERWORLD, true)).unwrap();
+        assert!(game.world.force_snow);
+        game.handle_packet(respawn(NETHER, 3)).unwrap();
+        game.handle_packet(swap(1)).unwrap();
+        assert!(game.world.force_snow);
+        assert!(viewed(&game, 1).unwrap().force_snow);
+        game.handle_packet(packet(NETHER, false)).unwrap();
+        assert!(!game.world.force_snow);
+        game.handle_packet(packet(NETHER, true)).unwrap();
+        game.handle_packet(respawn("minecraft:the_end", 3)).unwrap();
+        assert!(!game.world.force_snow);
+        assert!(viewed(&game, 1).is_none());
+        game.handle_packet(packet(NETHER, true)).unwrap();
+        assert!(!game.world.force_snow);
     }
 
     fn block(x: i32, y: i32, z: i32, state: horizon_world::registry::BlockStateId) -> C {

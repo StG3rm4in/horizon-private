@@ -79,6 +79,7 @@ fn uses_registered_payload_codec(channel: &str, play: bool, clientbound: bool) -
         crate::attachment_sync::CHANNEL
         | crate::anvil_cost::CHANNEL
         | crate::passage_sync::CHANNEL
+        | crate::level_precipitation::CHANNEL
         | "horizon:recipe_content"
         | "horizon:selector_tokens" => play && clientbound,
         // Configuration both ways (the capability), play clientbound only.
@@ -233,6 +234,7 @@ mod tests {
             ("horizon:menu_extra", [true, true, false, true]),
             ("horizon:anvil_cost", [false, false, false, true]),
             ("horizon:passage_sync", [false, false, false, true]),
+            ("horizon:level_precipitation", [false, false, false, true]),
             ("horizon:passage_cross", [false, false, true, false]),
             ("horizon:lod", [false, true, true, true]),
             ("horizon:block_registry", [true, true, false, false]),

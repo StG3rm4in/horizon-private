@@ -62,6 +62,9 @@ impl Game<'_> {
     /// height adjusted temperature) or none (no precipitation).
     pub(super) fn precipitation(&self, x: i32, y: i32, z: i32) -> Option<bool> {
         let chunk = self.world.chunks.get(&(x >> 4, z >> 4))?;
+        if self.world.force_snow {
+            return Some(true);
+        }
         self.res
             .biomes()
             .get(chunk.biome(x, y, z))

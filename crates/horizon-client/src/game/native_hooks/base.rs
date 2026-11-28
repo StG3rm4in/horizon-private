@@ -1,6 +1,17 @@
 use super::*;
 use mod_api::ModBlockEntity;
+
+#[cfg(test)]
+thread_local! {
+    static FORM_ENTRIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl GameLevel<'_> {
+    #[cfg(test)]
+    pub(in crate::game) fn take_formation_entries(&self) -> usize {
+        FORM_ENTRIES.with(|entries| entries.replace(0))
+    }
+
     /// Initial saved data for a declared block entity (`EntityBlock.newBlockEntity`),
     /// fired inside the write that creates it (`LevelChunk.setBlockState`), on
     /// a server and on a client of one. The declaration owns the type id; no
@@ -112,7 +123,24 @@ impl GameLevel<'_> {
         to: BlockStateId,
         cancel: &mut bool,
     ) {
+        #[cfg(test)]
+        FORM_ENTRIES.with(|entries| entries.set(entries.get() + 1));
         self.fire_block_form(dimension, pos, from, to, cancel);
+    }
+
+    /// Live precipitation is about to turn source water into ice. Server-side.
+    #[inline(always)]
+    pub(in crate::game) fn native_block_should_freeze(
+        &self,
+        dimension: LevelDimension,
+        pos: BlockPos,
+        from: BlockStateId,
+        to: BlockStateId,
+        cancel: &mut bool,
+    ) {
+        #[cfg(test)]
+        FORM_ENTRIES.with(|entries| entries.set(entries.get() + 1));
+        self.fire_block_should_freeze(dimension, pos, from, to, cancel);
     }
 
     /// The Ender Dragon fight is about to place its first dragon egg at `pos`.

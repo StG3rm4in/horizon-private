@@ -170,6 +170,10 @@ pub struct World {
     /// the game time and, like every clock, still while `advance_time` is off.
     pub end_clock: i64,
     pub weather: Weather,
+    /// Runtime precipitation policy for this level, replicated to its clients.
+    pub force_snow: bool,
+    /// Runtime server policy for melting surface snow and ice in warm biomes.
+    pub force_melt: bool,
     /// Every block position written since the log was last drained, kept
     /// only while the world is open to the network (see `lan`).
     pub block_log: Option<Vec<(i32, i32, i32)>>,
@@ -392,6 +396,8 @@ impl World {
             day_time: 1000,
             end_clock: 0,
             weather: Weather::default(),
+            force_snow: false,
+            force_melt: false,
             bees_ignore_weather: false,
             block_log: None,
             block_log_held: Vec::new(),

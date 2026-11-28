@@ -43,9 +43,18 @@ impl Behaviours {
         level: &L,
         pos: BlockPos,
     ) -> BlockPos {
+        let surface_y = level.world_surface(pos.x, pos.z).min(level.max_y());
+        self.motion_blocking_top_from_surface(level, pos, surface_y)
+    }
+
+    fn motion_blocking_top_from_surface<L: LevelAccess + ?Sized>(
+        &self,
+        level: &L,
+        pos: BlockPos,
+        surface_y: i32,
+    ) -> BlockPos {
         let blocks = self.tag("minecraft:blocks_motion_in_heightmap");
-        let top = level.world_surface(pos.x, pos.z).min(level.max_y());
-        for y in (level.min_y()..top).rev() {
+        for y in (level.min_y()..surface_y).rev() {
             let state = level.block_state(BlockPos::new(pos.x, y, pos.z));
             let fluid = self.fluid(state).kind() != FluidKind::Empty;
             if fluid || blocks.is_some_and(|t| t.contains(self.block(state))) {
@@ -61,13 +70,22 @@ impl Behaviours {
         level: &L,
         pos: BlockPos,
     ) -> Option<Precipitation> {
-        let top = self.motion_blocking_top(level, pos);
+        let surface_y = level.world_surface(pos.x, pos.z).min(level.max_y());
+        let top = self.motion_blocking_top_from_surface(level, pos, surface_y);
         let below = BlockPos::new(top.x, top.y - 1, top.z);
         let settings = self.biome_settings(level, top)?;
+        let force_snow = level.force_snow();
         let sea = sea_level(level);
+        let kind_at = |pos| {
+            if force_snow {
+                BiomePrecipitation::Snow
+            } else {
+                Self::precipitation_kind(settings, pos, sea)
+            }
+        };
         let inside = |p: BlockPos| p.y >= level.min_y() && p.y < level.max_y();
         // Biome.shouldFreeze(level, below, true)
-        let freezes_below = settings.height_adjusted(below, sea) < 0.15
+        let freezes_below = (force_snow || settings.height_adjusted(below, sea) < 0.15)
             && inside(below)
             && level.block_light(below) < 10
             && {
@@ -86,7 +104,7 @@ impl Behaviours {
                 !self.is_water_fluid(self.fluid(level.block_state(n)).kind())
             });
         // Biome.shouldSnow(level, top)
-        let snows_at_top = Self::precipitation_kind(settings, top, sea) == BiomePrecipitation::Snow
+        let snows_at_top = kind_at(top) == BiomePrecipitation::Snow
             && inside(top)
             && level.block_light(top) < 10
             && {
@@ -94,18 +112,30 @@ impl Behaviours {
                 (self.is_air(state) || self.block(state) == self.named.snow)
                     && self.snow_survives(level, top)
             };
-        let kind = match Self::precipitation_kind(settings, below, sea) {
+        let kind = match kind_at(below) {
             BiomePrecipitation::None => PrecipitationKind::None,
             BiomePrecipitation::Rain => PrecipitationKind::Rain,
             BiomePrecipitation::Snow => PrecipitationKind::Snow,
         };
         Some(Precipitation {
             top,
+            surface_y,
             freezes_below,
             snows_at_top,
             kind,
         })
     }
+
+    pub(super) fn warm_enough_to_melt<L: LevelAccess + ?Sized>(
+        &self,
+        level: &L,
+        pos: BlockPos,
+    ) -> bool {
+        // Biome.warmEnoughToRain is the inverse of coldEnoughToSnow, even in dry biomes.
+        self.biome_settings(level, pos)
+            .is_some_and(|settings| settings.height_adjusted(pos, sea_level(level)) >= 0.15)
+    }
+
     /// `SnowLayerBlock.canSurvive` for a default snow layer at `pos`.
     fn snow_survives<L: LevelAccess + ?Sized>(&self, level: &L, pos: BlockPos) -> bool {
         let below = level.block_state(BlockPos::new(pos.x, pos.y - 1, pos.z));
@@ -125,6 +155,9 @@ impl Behaviours {
             return false;
         }
         if self.motion_blocking_top(level, pos).y > pos.y {
+            return false;
+        }
+        if level.force_snow() {
             return false;
         }
         self.biome_settings(level, pos).is_some_and(|s| {

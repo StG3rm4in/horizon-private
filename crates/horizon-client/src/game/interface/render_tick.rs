@@ -116,6 +116,9 @@ fn motion_blocking_leaves(
 }
 /// `Biome.getPrecipitationAt` is rain (not snow) at this position.
 fn rains_at(world: &World, biomes: &Biomes, x: i32, y: i32, z: i32) -> bool {
+    if world.force_snow {
+        return false;
+    }
     let Some(chunk) = world.chunks.get(&(x >> 4, z >> 4)) else {
         return false;
     };
@@ -619,7 +622,7 @@ impl Game<'_> {
             .chunks
             .get(&(b[0] >> 4, b[2] >> 4))
             .map_or(0, |c| c.biome(b[0], b[1], b[2]));
-        let rains = world_biomes!(self).get(biome).precipitation;
+        let rains = self.world.force_snow || world_biomes!(self).get(biome).precipitation;
         (rain, self.world.light(b[0], b[1], b[2]) >> 4, rains)
     }
     /// Under `HORIZON_STILL` a frozen client's rain fog sits at its level, as the rain does: it
@@ -758,7 +761,7 @@ impl Game<'_> {
             animate_tick(self.res.animate(), &mut self.particles, &ctx, block);
             laps.lap("tp_animate");
             // The Horizon Weather option off means no rain visuals or sounds at all.
-            if rain > 0.0 && self.settings.horizon.weather {
+            if rain > 0.0 && self.settings.horizon.weather && !world.force_snow {
                 // ClientLevel.tickWeatherEffects: rain splashes within the weather
                 // radius, and the rain sound.
                 let mut random = LegacyRandom::new(self.world.game_time.wrapping_mul(312_987_231));

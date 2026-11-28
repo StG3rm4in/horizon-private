@@ -23,6 +23,18 @@ impl Game<'_> {
             C::CustomPayload(p) if p.channel == horizon_protocol::viewed_levels::CHANNEL => {
                 self.viewed_levels_payload(&p.data)?;
             }
+            C::CustomPayload(p) if p.channel == horizon_protocol::level_precipitation::CHANNEL => {
+                let (dimension, force) = horizon_protocol::level_precipitation::decode(&p.data)?;
+                if let Some(remote) = self.remote.as_mut() {
+                    if remote.level == dimension {
+                        self.world.force_snow = force;
+                    } else if let Some(slot) = remote.viewed.slot_of(&dimension)
+                        && let Some(view) = remote.viewed.get_mut(slot)
+                    {
+                        view.world.force_snow = force;
+                    }
+                }
+            }
             // Private custom recipe-book settings and placement protocol.
             C::CustomPayload(p)
                 if p.channel == horizon_client::recipe_book::settings_sync::CHANNEL =>

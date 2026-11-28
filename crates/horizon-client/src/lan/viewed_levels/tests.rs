@@ -12,6 +12,7 @@ use crate::world::World;
 use horizon_protocol::{
     buf::{Reader, Writer},
     ids::play::clientbound as ids,
+    level_precipitation,
     packets::play::Clientbound as C,
     viewed_levels::{self, Answer, CHANNEL, Level, Message},
 };
@@ -185,12 +186,20 @@ fn run_level(hub: &mut Hub, world: &mut World) {
 #[derive(Debug, PartialEq)]
 enum Got {
     Plain(i32),
+    Precipitation(String, bool),
     Open(i32),
     Wrapped { level: i32, id: i32, body: Vec<u8> },
     Close(i32),
 }
 
 fn got(rx: &Receiver<Out>) -> Vec<Got> {
+    got_with_precipitation(rx)
+        .into_iter()
+        .filter(|packet| !matches!(packet, Got::Precipitation(..)))
+        .collect()
+}
+
+fn got_with_precipitation(rx: &Receiver<Out>) -> Vec<Got> {
     let mut out = Vec::new();
     let bodies = rx.try_iter().flat_map(|o| match o {
         Out::Packet(body) => vec![body],
@@ -202,6 +211,11 @@ fn got(rx: &Receiver<Out>) -> Vec<Got> {
         let id = r.varint().unwrap();
         let payload = match C::decode(id, r.rest()) {
             Ok(C::CustomPayload(p)) if p.channel == CHANNEL => p,
+            Ok(C::CustomPayload(p)) if p.channel == level_precipitation::CHANNEL => {
+                let (level, force) = level_precipitation::decode(&p.data).unwrap();
+                out.push(Got::Precipitation(level, force));
+                continue;
+            }
             _ => {
                 out.push(Got::Plain(id));
                 continue;
@@ -221,6 +235,97 @@ fn got(rx: &Receiver<Out>) -> Vec<Got> {
         }
     }
     out
+}
+
+fn assert_precipitation_before_batch(
+    sent: &[Got],
+    level: &str,
+    force: bool,
+    viewed: bool,
+) -> usize {
+    let mut notices = sent.iter().enumerate().filter_map(|(i, packet)| {
+        if let Got::Precipitation(dimension, forced) = packet {
+            Some((i, dimension.as_str(), *forced))
+        } else {
+            None
+        }
+    });
+    let (notice, dimension, forced) = notices
+        .next()
+        .unwrap_or_else(|| panic!("missing precipitation notice: {sent:?}"));
+    assert_eq!((dimension, forced), (level, force), "{sent:?}");
+    assert!(notices.next().is_none(), "{sent:?}");
+
+    let start = sent
+        .iter()
+        .position(|packet| *packet == Got::Plain(ids::CHUNK_BATCH_START))
+        .unwrap_or_else(|| panic!("missing chunk batch start: {sent:?}"));
+    let chunk = sent
+        .iter()
+        .position(|packet| match packet {
+            Got::Plain(id) => !viewed && *id == ids::LEVEL_CHUNK_WITH_LIGHT,
+            Got::Wrapped { level, id, .. } => {
+                viewed && *level == NETHER_INDEX && *id == ids::LEVEL_CHUNK_WITH_LIGHT
+            }
+            _ => false,
+        })
+        .unwrap_or_else(|| panic!("missing chunk for {level}: {sent:?}"));
+    let finish = sent
+        .iter()
+        .position(|packet| *packet == Got::Plain(ids::CHUNK_BATCH_FINISHED))
+        .unwrap_or_else(|| panic!("missing chunk batch finish: {sent:?}"));
+    assert!(
+        notice < start && start < chunk && chunk < finish,
+        "{sent:?}"
+    );
+    notice
+}
+
+#[test]
+#[ignore = "daily"]
+fn level_precipitation_precedes_viewed_chunks() {
+    let (mut hub, rx) = hub_with(&[1], 2);
+    hub.set_viewed_areas(1, "test:portal", nether(2)).unwrap();
+    let mut world = lit_columns(3);
+    world.force_snow = true;
+
+    pass(&mut hub, NETHER, &mut world);
+    let sent = got_with_precipitation(&rx[0]);
+    let notice = assert_precipitation_before_batch(&sent, NETHER, true, true);
+    let open = sent
+        .iter()
+        .position(|packet| *packet == Got::Open(NETHER_INDEX));
+    assert!(open.is_some_and(|open| open < notice), "{sent:?}");
+
+    world.force_snow = false;
+    pass(&mut hub, NETHER, &mut world);
+    let sent = got_with_precipitation(&rx[0]);
+    assert_precipitation_before_batch(&sent, NETHER, false, true);
+    assert!(!sent.contains(&Got::Open(NETHER_INDEX)), "{sent:?}");
+}
+
+#[test]
+#[ignore = "daily"]
+fn level_precipitation_precedes_own_chunks() {
+    let (mut hub, rx) = hub_with(&[1], 2);
+    let mut world = lit_columns(3);
+    hub.set_dimension(NETHER);
+    in_ctx(&mut world, |ctx| {
+        hub.change_level(0, [8.5, 64.0, 8.5], 0.0, None, false, 0, ctx);
+    });
+
+    pass(&mut hub, NETHER, &mut world);
+    let sent = got_with_precipitation(&rx[0]);
+    let notice = assert_precipitation_before_batch(&sent, NETHER, false, false);
+    let respawn = sent
+        .iter()
+        .position(|packet| *packet == Got::Plain(ids::RESPAWN));
+    assert!(respawn.is_some_and(|respawn| respawn < notice), "{sent:?}");
+
+    world.force_snow = true;
+    pass(&mut hub, NETHER, &mut world);
+    let sent = got_with_precipitation(&rx[0]);
+    assert_precipitation_before_batch(&sent, NETHER, true, false);
 }
 
 /// The columns of the wrapped packets of kind `id` (chunks and forgets), in order.
@@ -1165,6 +1270,7 @@ fn got_bound(rx: &Receiver<Out>) -> Vec<Bound> {
         let id = r.varint().unwrap();
         let payload = match C::decode(id, r.rest()) {
             Ok(C::CustomPayload(p)) if p.channel == CHANNEL => p,
+            Ok(C::CustomPayload(p)) if p.channel == level_precipitation::CHANNEL => continue,
             _ => {
                 out.push(Bound::Plain(id));
                 continue;

@@ -594,6 +594,9 @@ impl MobWorld<'_> {
             return None;
         }
         let chunk = self.world.chunks.get(&(x >> 4, z >> 4))?;
+        if self.world.force_snow {
+            return Some(false);
+        }
         let biome = self.biomes.get(chunk.biome(x, y, z));
         if !biome.precipitation {
             return None;
