@@ -284,22 +284,24 @@ mod tests {
     fn a_second_preparation_of_a_folder_waits_for_the_first() {
         let root = folder("lock");
         let first = crate::hold_lock(&root, &|_| {}).unwrap();
-        let waited = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // The waiting line is the signal: the first lock is released only once it was
+        // written, so no fixed sleep can be too short on a loaded machine.
+        let (said, heard) = std::sync::mpsc::channel();
         let second = {
-            let (root, waited) = (root.clone(), waited.clone());
+            let root = root.clone();
             std::thread::spawn(move || {
-                let said = std::cell::Cell::new(false);
                 let _lock = crate::hold_lock(&root, &|line| {
-                    said.set(line.starts_with("Waiting for another horizon-prepare"))
+                    if line.starts_with("Waiting for another horizon-prepare") {
+                        let _ = said.send(());
+                    }
                 })
                 .unwrap();
-                waited.store(said.get(), std::sync::atomic::Ordering::SeqCst);
             })
         };
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        let waited = heard.recv_timeout(std::time::Duration::from_secs(30));
         assert!(!second.is_finished(), "the second lock did not wait");
         drop(first);
         second.join().unwrap();
-        assert!(waited.load(std::sync::atomic::Ordering::SeqCst));
+        waited.expect("the second lock never said it was waiting");
     }
 }

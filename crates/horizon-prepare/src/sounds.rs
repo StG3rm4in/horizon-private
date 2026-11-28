@@ -20,6 +20,7 @@ fn launcher_assets(
     manifest: &Value,
     files: &artifacts::GameFiles,
     cached_index: &Path,
+    fetch: Option<&crate::fetch::Fetch>,
     log: Log,
 ) -> Result<(PathBuf, PathBuf, Vec<u8>), String> {
     let assets = files.assets.clone();
@@ -40,12 +41,29 @@ fn launcher_assets(
         index = cached_index.to_path_buf();
     }
     if !index.is_file() {
-        let version = manifest.get("id").and_then(Value::as_str).unwrap_or("");
-        return Err(format!(
-            "Missing {}. {}",
-            index.display(),
-            files.hint(version)
-        ));
+        // The version JSON pins the index by its SHA-1 and gives its URL: a player without the
+        // game downloads it like any other pinned file.
+        let Some(fetch) = fetch else {
+            let version = manifest.get("id").and_then(Value::as_str).unwrap_or("");
+            return Err(format!(
+                "Missing {}. {}",
+                index.display(),
+                files.hint(version)
+            ));
+        };
+        let url = info
+            .get("url")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| fetch.manifest_url(sha1, id));
+        log(&format!("Fetching the {id} asset index"));
+        let data = fetch.bytes(&url, sha1, "sha1")?;
+        let store_index = assets.join("indexes").join(format!("{id}.json"));
+        if let Some(parent) = store_index.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        crate::write_if_changed(&store_index, &data)?;
+        index = store_index;
     }
     let bytes = fs::read(&index).map_err(|e| format!("{}: {e}", index.display()))?;
     let checksum = crate::hex(&<sha1::Sha1 as sha1::Digest>::digest(&bytes));
@@ -142,18 +160,26 @@ fn is_language(name: &str) -> bool {
 /// Full preparation can run from cached JARs without an official launcher install.
 #[cfg(test)]
 fn optional_assets(root: &Path, minecraft: Option<&Path>, log: Log) {
-    optional_imports(
-        Assets::load(root, None, minecraft, &Inputs::default(), None, log)
-            .as_mut()
-            .map_err(|e| e.as_str()),
-        log,
-    );
+    // Silent while loading: a reused import says so, and the caller reports only the
+    // outcome of each optional step.
+    let mut loaded = Assets::load(root, None, minecraft, &Inputs::default(), None, &|_| {});
+    let mut assets = loaded.as_mut().map_err(|e| e.as_str());
+    optional_imports(assets, log);
 }
 
 pub(crate) fn optional_imports(mut assets: Result<&mut Assets, &str>, log: Log) {
+    // Sounds come first: the client JAR only carries a stub `sounds.json`, so without the
+    // indexed one the game stays silent, while the other kinds only fill placeholders.
     for (wanted, label, required, failure, command) in [
         (
-            is_panorama as fn(&str) -> bool,
+            is_sound as fn(&str) -> bool,
+            "Sound",
+            &["minecraft/sounds.json"] as &[&str],
+            "Sounds",
+            "sounds",
+        ),
+        (
+            is_panorama,
             "Panorama",
             PANORAMA.as_slice(),
             "Title panorama",
@@ -323,6 +349,7 @@ impl Assets {
             &manifest,
             &files,
             &target.join("asset-index.json"),
+            fetch.as_ref(),
             log,
         )?;
         let text = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
@@ -835,14 +862,24 @@ mod tests {
                 lines.borrow_mut().push(line.to_string())
             });
             let lines = lines.into_inner();
+            // The sounds are indexed here, so they only fail with the index itself.
+            if missing == "last-object" {
+                assert_eq!(lines[0], "Sound assets ready: 3 files, 0.0 MB", "{lines:?}");
+            } else {
+                assert!(
+                    lines[0].starts_with("Sounds not imported: ")
+                        && lines[0].ends_with("; run horizon-prepare sounds later"),
+                    "{lines:?}"
+                );
+            }
             assert_eq!(
-                lines[0],
+                lines[1],
                 format!("Title panorama not imported: {error}; run horizon-prepare panorama later")
             );
             // The fonts and packs come on their own when only a panorama face is missing.
             match missing {
                 "last-object" => assert_eq!(
-                    lines[1..],
+                    lines[2..],
                     [
                         "Font assets ready: 2 files, 0.0 MB",
                         "Built-in pack assets ready: 2 files, 0.0 MB",
@@ -852,20 +889,20 @@ mod tests {
                     ]
                 ),
                 _ => {
-                    assert!(lines[1].starts_with("Unifont glyphs not imported: "));
+                    assert!(lines[2].starts_with("Unifont glyphs not imported: "));
                     assert!(
-                        lines[2].starts_with("Programmer Art and High Contrast not imported: ")
-                            && lines[2].ends_with("; run horizon-prepare packs later"),
+                        lines[3].starts_with("Programmer Art and High Contrast not imported: ")
+                            && lines[3].ends_with("; run horizon-prepare packs later"),
                         "{lines:?}"
                     );
                     assert!(
-                        lines[3].starts_with("Languages not imported: ")
-                            && lines[3].ends_with("; run horizon-prepare languages later"),
+                        lines[4].starts_with("Languages not imported: ")
+                            && lines[4].ends_with("; run horizon-prepare languages later"),
                         "{lines:?}"
                     );
                 }
             }
-            assert_eq!(lines.len(), 4);
+            assert_eq!(lines.len(), 5);
             for name in PANORAMA {
                 assert_eq!(fs::read(target.join(name)).unwrap(), b"jar placeholder");
             }
@@ -976,14 +1013,11 @@ mod tests {
         optional_imports(Ok(&mut assets), &|line| {
             lines.borrow_mut().push(line.to_string())
         });
-        assert_eq!(lines.borrow().len(), 4);
+        assert_eq!(lines.borrow().len(), 5);
         assert!(lines
             .borrow()
             .iter()
             .all(|line| line.contains("assets ready")));
-        assets
-            .copy(is_sound, "Sound", &["minecraft/sounds.json"], &|_| {})
-            .unwrap();
         let sound = assets
             .target
             .join("assets/minecraft/sounds/ambient/cave1.ogg");

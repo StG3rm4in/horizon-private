@@ -377,6 +377,12 @@ fn package(binary: &Path, out: &Path) -> Result<(), String> {
     copy_into(binary, out)?;
     copy_runtime("package", binary, out)?;
     copy_exporters(&repo.join("exporters"), &out.join("exporters"))?;
+    // horizon-prepare compiles the exporters from these sources when the folder is used on its
+    // own: a player who has only this folder must be able to prepare.
+    copy_exporters(
+        &repo.join("mods/horizon/src/test/java/dev/horizonlab/parity"),
+        &out.join("exporters/sources/dev/horizonlab/parity"),
+    )?;
     let play = repo.join("packaging/PLAY.txt");
     copy(&play, &out.join("PLAY.txt"))
 }
@@ -385,6 +391,10 @@ fn package_server(engine: &Path, out: &Path) -> Result<(), String> {
     preflight("package-server", engine)?;
     let repo = new_folder(out)?;
     copy_exporters(&repo.join("exporters"), &out.join("exporters"))?;
+    copy_exporters(
+        &repo.join("mods/horizon/src/test/java/dev/horizonlab/parity"),
+        &out.join("exporters/sources/dev/horizonlab/parity"),
+    )?;
     copy(engine, &out.join(program_name(engine, "horizon-engine")))?;
     copy_runtime("package-server", engine, out)
 }

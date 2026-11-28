@@ -51,7 +51,7 @@ pub(crate) fn key(root: &Path) -> Result<String, String> {
     let compiler = fs::read_to_string(root.join("crates/horizon-prepare/src/exporters.rs"))
         .unwrap_or_else(|_| include_str!("exporters.rs").into());
     hash.update(compiler.replace('\r', ""));
-    let mut sources = files(&root.join(PARITY))?;
+    let mut sources = files(&crate::parity_dir(root))?;
     sources.retain(|p| p.extension().is_some_and(|e| e == "java"));
     sources.push(root.join("research-lock.json"));
     for path in sources {
@@ -119,6 +119,14 @@ pub(crate) fn classes(run: &Run) -> Result<PathBuf, String> {
     }
     mkdir(&cached)?;
     let jdk = java::find(run.java_major, &[run.jdk.home()])?;
+    // The sources' root above `dev/horizonlab/parity`, whichever folder holds them: javac
+    // resolves package paths from it.
+    let sources = crate::parity_dir(&run.root);
+    let sourcepath = sources
+        .ancestors()
+        .nth(3)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| sources.clone());
     // The two sides compile at once: neither reads the other's classes.
     let sides = [
         ("server", SERVER, &run.server_classpath),
@@ -136,11 +144,15 @@ pub(crate) fn classes(run: &Run) -> Result<PathBuf, String> {
             "-cp".into(),
             cp.to_string(),
             "-sourcepath".into(),
-            arg(&run.root.join("mods/horizon/src/test/java")),
+            arg(&sourcepath),
             "-d".into(),
             arg(&classes),
         ];
-        args.extend(mains.iter().map(|n| arg(&run.oracle(&format!("{n}.java")))));
+        args.extend(
+            mains
+                .iter()
+                .map(|n| arg(&sources.join(format!("{n}.java")))),
+        );
         jdk.javac(run.java_major, &args, &log)?;
         let validate = vec![
             "-Xverify:all".into(),

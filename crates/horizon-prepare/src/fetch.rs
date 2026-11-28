@@ -19,7 +19,7 @@ use crate::files::Import;
 use crate::Log;
 use sha1::Digest;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -245,9 +245,13 @@ impl Fetch {
         log: Log,
     ) -> Result<(), String> {
         let error = |e: std::io::Error| format!("{}: {e}", partial.display());
+        // Not append mode: appending pins the offset at the end, and a truncation followed by
+        // a seek back to it would leave a hole (`set_len` on an append handle does not move the
+        // write position, which Windows also refuses once the file has shrunk under it).
         let mut file = fs::OpenOptions::new()
             .create(true)
-            .append(true)
+            .truncate(false)
+            .write(true)
             .open(partial)
             .map_err(error)?;
         let mut offset = file.metadata().map_err(error)?.len();
@@ -261,6 +265,8 @@ impl Fetch {
             offset -= 1;
             file.set_len(offset).map_err(error)?;
         }
+        // Every later write goes after the bytes kept, whichever truncations happened above.
+        file.seek(SeekFrom::Start(offset)).map_err(error)?;
         let mut hash = Running::new(algorithm);
         if offset > 0 {
             let mut prefix = fs::File::open(partial).map_err(error)?;
@@ -287,6 +293,7 @@ impl Fetch {
                 // The partial is no prefix of this file any more.
                 Err(ureq::Error::StatusCode(416)) if offset > 0 => {
                     file.set_len(0).map_err(error)?;
+                    file.seek(SeekFrom::Start(0)).map_err(error)?;
                     offset = 0;
                     hash = Running::new(algorithm);
                 }
@@ -296,6 +303,7 @@ impl Fetch {
         // A server that ignores the range answers 200 with the whole file.
         if response.status().as_u16() == 200 && offset > 0 {
             file.set_len(0).map_err(error)?;
+            file.seek(SeekFrom::Start(0)).map_err(error)?;
             offset = 0;
             hash = Running::new(algorithm);
         }

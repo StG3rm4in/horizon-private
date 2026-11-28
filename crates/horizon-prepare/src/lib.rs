@@ -478,6 +478,23 @@ struct Run<'a> {
 }
 
 const PARITY: &str = "mods/horizon/src/test/java/dev/horizonlab/parity";
+/// The same sources a release package carries beside its compiled exporters, for a player who
+/// has only the package.
+const PACKAGED_PARITY: &str = "exporters/sources/dev/horizonlab/parity";
+
+/// Where the exporter sources are: the checkout's, else the package's, else the checkout's
+/// (whose absence then fails later with a path the player can read).
+pub(crate) fn parity_dir(root: &Path) -> PathBuf {
+    let checkout = root.join(PARITY);
+    if checkout.is_dir() {
+        return checkout;
+    }
+    let packaged = root.join(PACKAGED_PARITY);
+    if packaged.is_dir() {
+        return packaged;
+    }
+    checkout
+}
 
 impl Run<'_> {
     /// Opens the next stage of `steps`.
@@ -501,7 +518,7 @@ impl Run<'_> {
     }
 
     fn oracle(&self, name: &str) -> PathBuf {
-        self.root.join(PARITY).join(name)
+        parity_dir(&self.root).join(name)
     }
 
     fn previous(&self, key: &str) -> Option<&Value> {
@@ -700,7 +717,7 @@ fn prepare_impl(
         Some(hold_lock(&resources, log)?)
     };
     let manifest_path = resources.join("horizon-resources.json");
-    let oracle = root.join(PARITY).join("VanillaHeightmapOracle.java");
+    let oracle = parity_dir(root).join("VanillaHeightmapOracle.java");
     let jar_hashes = pool::map(&[&found.jars["client"], &found.jars["server"]], |jar| {
         digest(jar, "sha256")
     })?;

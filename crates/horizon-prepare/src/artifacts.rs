@@ -799,6 +799,9 @@ pub(crate) fn import_manifest(
             let pinned = lock.pin("manifest_sha1")?;
             if destination.exists() && lock.manifest_accepted(&digest(&destination, "sha1")?) {
                 // A previous run already saved Mojang's own copy.
+                log(&format!(
+                    "Reusing the {version} version JSON imported before"
+                ));
             } else if let Some(fetch) = fetch {
                 log(&format!("Fetching Mojang's own {version} version JSON"));
                 let url = fetch.manifest_url(pinned, version);
@@ -819,7 +822,12 @@ pub(crate) fn import_manifest(
             fs::create_dir_all(&lock.directory).map_err(|e| e.to_string())?;
             fs::copy(source, &destination).map_err(|e| e.to_string())?;
         }
-    } else if !(destination.exists() && lock.manifest_accepted(&digest(&destination, "sha1")?)) {
+    } else if destination.exists() && lock.manifest_accepted(&digest(&destination, "sha1")?) {
+        // No copy in a launcher folder: the import made before stands, and nothing is fetched.
+        log(&format!(
+            "Reusing the {version} version JSON imported before"
+        ));
+    } else {
         match fetch {
             Some(fetch) => {
                 let pinned = lock.pin("manifest_sha1")?;
