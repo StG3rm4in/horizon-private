@@ -5,6 +5,11 @@ use super::*;
 impl Launcher {
     /// The chip's two lines: the name that plays, and how.
     pub(super) fn who_plays(&self) -> (String, &'static str) {
+        if self.ely_ui.selected {
+            if let Some(name) = &self.ely_ui.profile_name() {
+                return (name.clone(), "Ely.by");
+            }
+        }
         match self.accounts.selected() {
             Some(a) => (a.name.clone(), tr("Microsoft account")),
             None => (String::new(), tr("Sign in with Microsoft")),
@@ -15,7 +20,10 @@ impl Launcher {
         let mut accounts = Accounts::load();
         let done = accounts.play_as(uuid).and_then(|()| accounts.save());
         match done {
-            Ok(()) => self.accounts = accounts,
+            Ok(()) => {
+                self.accounts = accounts;
+                self.ely_ui.selected = false;
+            }
             Err(e) => self.sign_in_state = Some(SignInState::Done(Err(e))),
         }
         self.account_menu = false;
@@ -56,7 +64,7 @@ impl Launcher {
                 cx.notify();
             }));
         for (i, (who, name, how)) in self.players().into_iter().enumerate() {
-            let chosen = Some(&who) == now.as_ref();
+            let chosen = !self.ely_ui.selected && Some(&who) == now.as_ref();
             menu = menu.child(
                 div()
                     .id(SharedString::from(format!("account-pick-{i}")))

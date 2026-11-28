@@ -25,6 +25,7 @@ mod console_page;
 mod cull;
 mod datapacks_page;
 mod developer_play;
+mod ely_gui;
 mod export_page;
 mod frame;
 mod game_tools;
@@ -493,6 +494,7 @@ struct Launcher {
     root_focus: FocusHandle,
     /// Microsoft accounts (accounts.json), the sign-in under way and what it last showed.
     accounts: Accounts,
+    ely_ui: ely_gui::ElyUi,
     auth_status: HashMap<String, account::session::Status>,
     auth_progress: HashMap<String, account::session::Phase>,
     profile_heads: profile_heads::Heads,

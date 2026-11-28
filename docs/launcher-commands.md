@@ -6,6 +6,44 @@ Every command of `horizon-launcher`, and the tool `horizon-launcher mcp` offers 
 
 With No AI on, `mcp` and `agent-config` are hidden and refuse; every other command stays. See [agent-control.md](agent-control.md#no-ai).
 
+## `horizon-launcher ely-account sign-in`
+
+Sign in and save the Ely.by account in the system credential store.
+
+    horizon-launcher ely-account sign-in
+
+MCP: none: the player's switch.
+
+## `horizon-launcher ely-account sign-out`
+
+Remove the saved Ely.by account.
+
+    horizon-launcher ely-account sign-out
+
+MCP: none: the player's switch.
+
+## `horizon-launcher ely-account status`
+
+Show the Ely.by account saved on this computer.
+
+    horizon-launcher ely-account status
+
+MCP: none: the player's switch.
+
+## `horizon-launcher ely-play`
+
+Prepare local Minecraft files and play Noelcraft with Ely.by.
+
+    horizon-launcher ely-play --bundle <BUNDLE> --server <SERVER>
+
+- `--bundle`
+- `--prism-instance`
+- `--minecraft`
+- `--java-home`
+- `--server`
+
+MCP: none: the player's switch.
+
 ## `horizon-launcher completions`
 
 Write a shell completion script to stdout.

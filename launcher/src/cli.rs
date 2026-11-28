@@ -694,7 +694,35 @@ impl SourceArg {
 }
 
 #[derive(Subcommand)]
+enum ElyAccount {
+    /// Sign in and save the Ely.by account in the system credential store
+    SignIn,
+    /// Remove the saved Ely.by account
+    SignOut,
+    /// Show the Ely.by account saved on this computer
+    Status,
+}
+
+#[derive(Subcommand)]
 enum Cmd {
+    /// Manage the Ely.by account for Noelcraft
+    ElyAccount {
+        #[command(subcommand)]
+        action: ElyAccount,
+    },
+    /// Prepare local Minecraft files and play Noelcraft with Ely.by
+    ElyPlay {
+        #[arg(long, value_name = "BUNDLE")]
+        bundle: PathBuf,
+        #[arg(long, conflicts_with = "minecraft")]
+        prism_instance: Option<PathBuf>,
+        #[arg(long)]
+        minecraft: Option<PathBuf>,
+        #[arg(long)]
+        java_home: Option<PathBuf>,
+        #[arg(long, value_name = "SERVER", value_parser = account::ely::server_address)]
+        server: String,
+    },
     /// Write a shell completion script to stdout
     Completions { shell: clap_complete::Shell },
     /// List Horizon releases, or the installed versions
@@ -1639,6 +1667,51 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                     backend::markdown_to_text(&r.body)
                 );
             }
+        }
+        Cmd::ElyAccount { action } => {
+            use account::ely;
+            match action {
+                ElyAccount::SignIn => {
+                    let name = ely::sign_in()?;
+                    if as_json {
+                        json(serde_json::json!({"name": name}));
+                    } else {
+                        println!(
+                            "{}",
+                            crate::i18n::trf("Signed in to Ely.by as {name}", &[("name", &name)])
+                        );
+                    }
+                }
+                ElyAccount::SignOut => ely::sign_out()?,
+                ElyAccount::Status => {
+                    let name = ely::status()?;
+                    if as_json {
+                        json(serde_json::json!({"name": name}));
+                    } else if let Some(name) = name {
+                        println!(
+                            "{}",
+                            crate::i18n::trf("Saved Ely.by account: {name}", &[("name", &name)])
+                        );
+                    } else {
+                        println!("{}", crate::i18n::tr("No saved Ely.by account"));
+                    }
+                }
+            }
+        }
+        Cmd::ElyPlay {
+            bundle,
+            prism_instance,
+            minecraft,
+            java_home,
+            server,
+        } => {
+            return account::ely::play(
+                &bundle,
+                prism_instance.as_deref(),
+                minecraft.as_deref(),
+                java_home.as_deref(),
+                &server,
+            );
         }
         Cmd::Account { action } => account_command(action.unwrap_or(AccountCmd::List), as_json)?,
         Cmd::Data { action } => data(action.unwrap_or(DataCmd::Status), as_json)?,
@@ -3964,6 +4037,42 @@ mod tests {
             .command
             .unwrap();
         assert!(execute(command, false).unwrap_err().contains(id));
+    }
+
+    #[test]
+    fn ely_commands_accept_local_play_and_reject_conflicting_sources() {
+        for action in ["sign-in", "sign-out", "status"] {
+            assert!(matches!(
+                Cli::try_parse_from(["horizon-launcher", "ely-account", action])
+                    .unwrap()
+                    .command,
+                Some(Cmd::ElyAccount { .. })
+            ));
+        }
+        let play = [
+            "horizon-launcher",
+            "ely-play",
+            "--bundle",
+            "bundle",
+            "--server",
+            "[::1]:25565",
+        ];
+        assert!(matches!(
+            Cli::try_parse_from(play).unwrap().command,
+            Some(Cmd::ElyPlay {
+                prism_instance: None,
+                minecraft: None,
+                java_home: None,
+                ..
+            })
+        ));
+        assert!(Cli::try_parse_from(play.into_iter().chain([
+            "--prism-instance",
+            "instance",
+            "--minecraft",
+            ".minecraft",
+        ]))
+        .is_err());
     }
 
     #[test]

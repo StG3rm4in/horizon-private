@@ -3,7 +3,7 @@ use super::*;
 
 impl Launcher {
     pub(crate) fn drain(&mut self, window: gpui::AnyWindowHandle, cx: &mut Context<Self>) {
-        let mut changed = false;
+        let mut changed = self.ely_ui.poll();
         // A game said which shader API it serves: the packs judged by the launcher's own line
         // while it was asked are judged again.
         let answers = horizon_launcher::game_shader_api::answers();

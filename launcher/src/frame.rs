@@ -1009,11 +1009,15 @@ impl Launcher {
         let strip = self.nav_strip.render(tabs, &t, performance, window);
 
         let (name, how) = self.who_plays();
-        let face = self.accounts.selected().map(|a| a.uuid.clone());
+        let face = self
+            .accounts
+            .selected()
+            .filter(|_| !self.ely_ui.selected)
+            .map(|a| a.uuid.clone());
         let open = self.account_menu;
         // Signed out, the chip is only the face: the Sign in with Microsoft button beside it
         // says it once, and the page tabs keep their room.
-        let signed_in = face.is_some() && !tight;
+        let signed_in = (face.is_some() || self.ely_ui.selected) && !tight;
         let chip =
             div()
                 .id("account")
@@ -1076,7 +1080,7 @@ impl Launcher {
             .children(self.glass_account_menu(cx));
 
         // Signing in with Microsoft, while nobody is: the mockup's button.
-        let sign_in = self.accounts.selected().is_none().then(|| {
+        let sign_in = (!self.ely_ui.selected && self.accounts.selected().is_none()).then(|| {
             keyboard(
                 div()
                     .id("topbar-sign-in")
@@ -1208,7 +1212,7 @@ impl Launcher {
                 cx.notify();
             }));
         for (i, (who, name, how)) in self.players().into_iter().enumerate() {
-            let chosen = Some(&who) == now.as_ref();
+            let chosen = !self.ely_ui.selected && Some(&who) == now.as_ref();
             let id = SharedString::from(format!("account-pick-{i}"));
             menu = menu.child(keyboard(
                 track_hover(
