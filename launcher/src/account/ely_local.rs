@@ -330,13 +330,17 @@ fn prepare_command(
     command
 }
 
-fn client_command(program: &Path, bundle: &Path, java: Option<&Path>) -> Command {
+fn client_command(program: &Path, bundle: &Path, java: Option<&Path>, server: &str) -> Command {
     let mut command = local_command(program, bundle, java);
     command
         .env("HORIZON_API_DISCOVERY", "ely.by")
         .env("HORIZON_COSMETICS", "0")
         .env_remove("HORIZON_COSMETICS_API")
-        .env_remove("HORIZON_COSMETICS_LOCAL");
+        .env_remove("HORIZON_COSMETICS_LOCAL")
+        // Mixed Microsoft and Ely.by mode: the client checks the profile provider and the skins
+        // for the Noelcraft server only (crates/horizon-protocol/src/mixed.rs).
+        .env("HORIZON_MIXED_CLIENT", server)
+        .env_remove("HORIZON_MIXED_PROVIDERS");
     command
 }
 
@@ -437,7 +441,7 @@ pub fn play(
     fs::create_dir_all(&game_dir).map_err(|e| e.to_string())?;
 
     let session = super::refresh()?.game_session();
-    let mut game = client_command(&client, &bundle, java.as_deref())
+    let mut game = client_command(&client, &bundle, java.as_deref(), server)
         .arg("--session-stdin")
         .arg("--resources")
         .arg(resources)
@@ -564,7 +568,12 @@ mod tests {
 
     #[test]
     fn ely_client_disables_cosmetics_and_clears_overrides() {
-        let command = client_command(Path::new("horizon-client"), Path::new("."), None);
+        let command = client_command(
+            Path::new("horizon-client"),
+            Path::new("."),
+            None,
+            "play.example:25565",
+        );
         let overrides: std::collections::HashMap<_, _> = command.get_envs().collect();
         assert_eq!(
             overrides.get(OsStr::new("HORIZON_API_DISCOVERY")),
@@ -574,10 +583,15 @@ mod tests {
             overrides.get(OsStr::new("HORIZON_COSMETICS")),
             Some(&Some(OsStr::new("0")))
         );
+        assert_eq!(
+            overrides.get(OsStr::new("HORIZON_MIXED_CLIENT")),
+            Some(&Some(OsStr::new("play.example:25565")))
+        );
         for name in [
             "HORIZON_COSMETICS_API",
             "HORIZON_COSMETICS_LOCAL",
             "HORIZON_SESSION_FILE",
+            "HORIZON_MIXED_PROVIDERS",
         ] {
             assert_eq!(overrides.get(OsStr::new(name)), Some(&None), "{name}");
         }
